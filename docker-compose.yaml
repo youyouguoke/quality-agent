@@ -27,6 +27,8 @@ services:
     volumes:
       # 日志持久化 - 映射到宿主机目录
       - /home/agentdata/quality-agent/logs:/app/logs
+      # Skill 文件持久化 - Agent 自动更新的 Skill 不会因容器重启丢失
+      - /home/agentdata/quality-agent/skills:/app/skills
     networks:
       - quality-net
     healthcheck:
