@@ -32,14 +32,17 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 
 # 创建非 root 用户
 RUN groupadd -r appuser && useradd -r -g appuser -d /app -s /sbin/nologin appuser \
-    && mkdir -p /app/logs /app/skills \
+    && mkdir -p /app/logs /app/skills /app/knowledge \
     && chown -R appuser:appuser /app
 
 # 复制应用代码
-COPY --chown=appuser:appuser app.py config.py database.py agents.py tools.py models.py mcp_client.py skill_manager.py ./
+COPY --chown=appuser:appuser app.py config.py database.py agents.py tools.py models.py mcp_client.py skill_manager.py knowledge_base.py ./
 
 # 复制 Skill 文件（初始技能定义）
 COPY --chown=appuser:appuser skills/ ./skills/
+
+# 复制知识库文件（基线标准、术语、案例）
+COPY --chown=appuser:appuser knowledge/ ./knowledge/
 
 # 切换到非 root 用户
 USER appuser

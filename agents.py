@@ -14,6 +14,7 @@ from typing import Any, Optional
 from openai import OpenAI
 
 from config import LLM_CONFIG, TABLE_SCHEMAS, UNAVAILABLE_TABLES
+from knowledge_base import build_knowledge_prompt
 from models import AgentStep, ChatMessage, ToolCallRecord
 from skill_manager import build_skill_prompt, match_skills
 from tools import OPENAI_TOOLS_SCHEMA, execute_tool
@@ -90,6 +91,9 @@ BASE_SYSTEM_PROMPT = """你是质量管理AI Agent，擅长分析质量数据资
 ## 工作原则
 - 优先使用组合工具（sn_full_trace/supplier_overview/return_overview等）一次获取多维度数据，减少调用次数
 - 每次工具调用后如果数据已足够回答问题，立即给出分析结论，不要多余调用
+- 查到关键指标（退货率、IQC合格率、直通率等）后，应调用 `baseline_compare` 与基线标准对比，明确标注是正常/预警/严重
+- 遇到不确定的质量术语或需要参考历史案例时，调用 `search_knowledge` 检索知识库
+- 分析结论中应包含与基线的对比判断，不要只列数字不给评价
 - 所有占比都要计算并展示百分比
 - 用中文回答，结构清晰
 
@@ -101,15 +105,20 @@ BASE_SYSTEM_PROMPT = """你是质量管理AI Agent，擅长分析质量数据资
 REFLECTION_PROMPT = """请回顾本次分析过程，思考以下问题并以 JSON 格式回答：
 1. 本次分析中是否有新发现的领域知识或判断标准？（如某个指标的正常范围、某类问题的常见原因等）
 2. 分析流程是否有可以优化的地方？（如某个步骤多余、或者缺少某个步骤）
-3. 输出格式是否需要调整？
+3. 是否发现了值得记录的分析案例？（如某个产品/供应商出现了特殊情况）
 
 请严格按以下 JSON 格式回答（如果没有改进建议，should_update 设为 false）：
 ```json
 {
     "should_update": true/false,
-    "skill_name": "技能名称（如果需要更新）",
-    "new_knowledge": "新发现的知识（追加到现有知识后面，如果没有则为空字符串）",
-    "improvement_note": "改进说明（简要描述改了什么）"
+    "skill_name": "技能名称（如果需要更新技能）",
+    "new_knowledge": "新发现的知识（追加到技能的知识段落，如果没有则为空字符串）",
+    "improvement_note": "改进说明（简要描述改了什么）",
+    "new_case": {
+        "should_save": true/false,
+        "title": "案例标题（如果需要保存新案例）",
+        "content": "案例内容（包含现象、根因、经验等，Markdown格式）"
+    }
 }
 ```
 只返回 JSON，不要其他内容。"""
@@ -147,6 +156,12 @@ def _try_reflect_and_update(client: OpenAI, messages: list[dict], matched_skills
 
         reflection = json.loads(json_match.group())
         if not reflection.get("should_update"):
+            # 即使 skill 不需要更新，也检查是否有新案例需要沉淀
+            new_case = reflection.get("new_case", {})
+            if new_case.get("should_save") and new_case.get("title") and new_case.get("content"):
+                from knowledge_base import save_case
+                save_case(new_case["title"], new_case["content"])
+                logger.info("已沉淀新分析案例: %s", new_case["title"])
             return
 
         skill_name = reflection.get("skill_name", "")
@@ -181,6 +196,13 @@ def _try_reflect_and_update(client: OpenAI, messages: list[dict], matched_skills
 
         logger.info("Skill [%s] 已自动更新至 v%s: %s", skill_name, new_version, improvement_note)
 
+        # 同时检查是否有新案例需要沉淀
+        new_case = reflection.get("new_case", {})
+        if new_case.get("should_save") and new_case.get("title") and new_case.get("content"):
+            from knowledge_base import save_case
+            save_case(new_case["title"], new_case["content"])
+            logger.info("已沉淀新分析案例: %s", new_case["title"])
+
     except Exception as e:
         logger.debug("反思更新 Skill 失败（不影响主流程）: %s", e)
 
@@ -209,8 +231,15 @@ def run_master_agent(
     if matched_skills:
         logger.info("匹配到 Skill: %s", [s["name"] for s in matched_skills])
 
-    # 构建 system prompt = 基础 prompt + 数据上下文 + 匹配的 Skill
+    # 构建 system prompt = 基础 prompt + 数据上下文 + 知识上下文 + 匹配的 Skill
     system_prompt = BASE_SYSTEM_PROMPT.format(data_context=_build_all_data_context())
+
+    # 注入知识库上下文（基线标准 + 相关术语/案例）
+    knowledge_prompt = build_knowledge_prompt(query)
+    if knowledge_prompt:
+        system_prompt += "\n" + knowledge_prompt
+
+    # 注入匹配的 Skill
     if skill_prompt:
         system_prompt += "\n" + skill_prompt
 

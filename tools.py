@@ -474,6 +474,108 @@ def tool_return_overview(sku_name: str = None, factory: str = None, _user: str =
     return json.dumps(result, ensure_ascii=False, default=str)
 
 
+# ======================== 基线对比工具 ========================
+
+def tool_baseline_compare(indicator: str, actual_value: float,
+                          sku_category: str = None,
+                          compare_type: str = "退货率") -> str:
+    """
+    将实际质量指标与知识库中的基线标准进行对比，返回判定结果。
+
+    Args:
+        indicator: 指标名称（如 "退货率", "IQC批次合格率", "直通率"）
+        actual_value: 实际数值（百分比形式，如 2.5 表示 2.5%）
+        sku_category: SKU类别（如 "空气净化器"），退货率对比时需要
+        compare_type: 对比类型，"退货率"/"供应商IQC"/"代工厂"
+    """
+    try:
+        result = {
+            "indicator": indicator,
+            "actual_value": actual_value,
+            "compare_type": compare_type,
+        }
+
+        if compare_type == "退货率":
+            # SKU 退货率基线
+            baselines = {
+                "空气净化器": {"normal": 2.0, "warning": 2.0, "critical": 4.0},
+                "新风机":     {"normal": 1.5, "warning": 1.5, "critical": 3.0},
+                "加湿器":     {"normal": 2.5, "warning": 2.5, "critical": 5.0},
+                "扫地机器人": {"normal": 3.0, "warning": 3.0, "critical": 5.0},
+                "风扇":       {"normal": 1.0, "warning": 1.0, "critical": 2.0},
+                "取暖器":     {"normal": 1.5, "warning": 1.5, "critical": 3.0},
+            }
+            bl = baselines.get(sku_category, {"normal": 2.0, "warning": 2.0, "critical": 4.0})
+            result["sku_category"] = sku_category or "默认"
+            result["baseline"] = bl
+
+            if actual_value <= bl["normal"]:
+                result["level"] = "正常"
+                result["assessment"] = f"退货率 {actual_value}% 在正常范围内（≤{bl['normal']}%）"
+            elif actual_value <= bl["critical"]:
+                result["level"] = "预警"
+                result["assessment"] = f"退货率 {actual_value}% 超过预警线（>{bl['warning']}%），需关注"
+            else:
+                result["level"] = "严重"
+                result["assessment"] = f"退货率 {actual_value}% 超过严重线（>{bl['critical']}%），需立即处理"
+
+        elif compare_type == "供应商IQC":
+            if actual_value >= 98:
+                result["level"] = "优秀"
+                result["assessment"] = f"IQC批次合格率 {actual_value}% 达到优秀水平（≥98%）"
+            elif actual_value >= 95:
+                result["level"] = "合格"
+                result["assessment"] = f"IQC批次合格率 {actual_value}% 达到合格水平（≥95%）"
+            elif actual_value >= 90:
+                result["level"] = "预警"
+                result["assessment"] = f"IQC批次合格率 {actual_value}% 处于预警区间（90%-95%），需关注"
+            else:
+                result["level"] = "不合格"
+                result["assessment"] = f"IQC批次合格率 {actual_value}% 低于合格线（<90%），需立即改善"
+
+        elif compare_type == "代工厂":
+            if actual_value >= 98:
+                result["level"] = "优秀"
+                result["assessment"] = f"{indicator} {actual_value}% 达到优秀水平"
+            elif actual_value >= 95:
+                result["level"] = "合格"
+                result["assessment"] = f"{indicator} {actual_value}% 达到合格水平"
+            elif actual_value >= 90:
+                result["level"] = "预警"
+                result["assessment"] = f"{indicator} {actual_value}% 处于预警区间，需关注"
+            else:
+                result["level"] = "不合格"
+                result["assessment"] = f"{indicator} {actual_value}% 低于合格线，需立即改善"
+
+        else:
+            result["level"] = "未知"
+            result["assessment"] = f"不支持的对比类型: {compare_type}"
+
+        return json.dumps(result, ensure_ascii=False)
+
+    except Exception as e:
+        logger.error("tool_baseline_compare 错误: %s", e)
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+def tool_search_knowledge(query: str) -> str:
+    """
+    在质量知识库中检索相关知识，包括基线标准、专业术语、历史案例。
+    """
+    try:
+        from knowledge_base import search_knowledge
+        results = search_knowledge(query)
+        if not results:
+            return json.dumps({"message": "未找到相关知识", "results": []}, ensure_ascii=False)
+        return json.dumps({
+            "count": len(results),
+            "results": results,
+        }, ensure_ascii=False)
+    except Exception as e:
+        logger.error("tool_search_knowledge 错误: %s", e)
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
 # ======================== 工具注册表 ========================
 # 将工具函数映射到名称，供 agents.py 分发调用
 
@@ -490,6 +592,8 @@ TOOL_REGISTRY: dict[str, callable] = {
     "factory_overview": tool_factory_overview,
     "sku_overview": tool_sku_overview,
     "return_overview": tool_return_overview,
+    "baseline_compare": tool_baseline_compare,
+    "search_knowledge": tool_search_knowledge,
 }
 
 
@@ -726,6 +830,41 @@ OPENAI_TOOLS_SCHEMA = [
                     "factory": {"type": "string", "description": "按生产工厂模糊过滤（可选）"},
                 },
                 "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "baseline_compare",
+            "description": "将实际质量指标与基线标准进行对比，返回判定结果（正常/预警/严重）。可对比退货率、IQC合格率、代工厂直通率等指标。在查询到实际数据后应主动调用此工具进行基线对比。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "indicator": {"type": "string", "description": "指标名称，如'退货率'、'IQC批次合格率'、'直通率'"},
+                    "actual_value": {"type": "number", "description": "实际数值（百分比形式），如 2.5 表示 2.5%"},
+                    "sku_category": {"type": "string", "description": "SKU类别（退货率对比时需要），如'空气净化器'、'扫地机器人'"},
+                    "compare_type": {
+                        "type": "string",
+                        "enum": ["退货率", "供应商IQC", "代工厂"],
+                        "description": "对比类型，默认'退货率'",
+                    },
+                },
+                "required": ["indicator", "actual_value"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_knowledge",
+            "description": "在质量知识库中检索相关知识，包括基线标准、质量术语解释、历史分析案例。当需要了解质量专业概念或查找历史类似问题时调用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "搜索关键词，如'主板不良'、'IQC是什么'、'退货率基线'"},
+                },
+                "required": ["query"],
             },
         },
     },
