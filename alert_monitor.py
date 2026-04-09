@@ -257,14 +257,17 @@ def _check_defect_concentration():
 
 
 def _check_supplier_iqc():
-    """规则3: 供应商 IQC 直通率低于基线检测"""
+    """规则3: 供应商月度 IQC 抽检不合格次数检测"""
     try:
         from database import execute_query
 
+        # 查每个供应商的进料批次和合格批次，计算不合格次数
         sql = """
-            SELECT supplier_name, iqc_batch_pass_rate, reject_rate
+            SELECT supplier_name,
+                   COALESCE(iqc_batch, 0) AS iqc_batch,
+                   COALESCE(qualified_batch, 0) AS qualified_batch
             FROM supplier_quality_iqc
-            WHERE iqc_batch_pass_rate IS NOT NULL
+            WHERE iqc_batch IS NOT NULL
         """
         rows = execute_query(sql)
         if not rows:
@@ -273,31 +276,38 @@ def _check_supplier_iqc():
         for r in rows:
             supplier = r["supplier_name"]
             try:
-                pass_rate = float(str(r["iqc_batch_pass_rate"]).replace("%", ""))
+                iqc_batch = int(r["iqc_batch"])
+                qualified_batch = int(r["qualified_batch"])
             except (ValueError, TypeError):
                 continue
 
-            if pass_rate < 98:
+            unqualified = iqc_batch - qualified_batch
+            if unqualified <= 0:
+                continue
+
+            if unqualified > 3:
                 _add_alert(
                     level="critical",
-                    rule="supplier_iqc_low",
-                    title=f"供应商 {supplier} 直通率不达标",
-                    detail=f"直通率 {pass_rate:.1f}%，低于严重线(<98%)，需立即改善",
-                    data={"supplier_name": supplier, "iqc_batch_pass_rate": pass_rate,
-                          "reject_rate": r.get("reject_rate")},
+                    rule="supplier_iqc_unqualified",
+                    title=f"供应商 {supplier} 月度IQC抽检不合格次数过多",
+                    detail=f"IQC抽检不合格 {unqualified} 次（进料{iqc_batch}批/合格{qualified_batch}批），"
+                           f"超过严重阈值(>3次)，需立即改善",
+                    data={"supplier_name": supplier, "iqc_batch": iqc_batch,
+                          "qualified_batch": qualified_batch, "unqualified": unqualified},
                 )
-            elif pass_rate < 99:
+            elif unqualified > 2:
                 _add_alert(
                     level="warning",
-                    rule="supplier_iqc_low",
-                    title=f"供应商 {supplier} 直通率预警",
-                    detail=f"直通率 {pass_rate:.1f}%，处于预警区间(98%-99%)",
-                    data={"supplier_name": supplier, "iqc_batch_pass_rate": pass_rate,
-                          "reject_rate": r.get("reject_rate")},
+                    rule="supplier_iqc_unqualified",
+                    title=f"供应商 {supplier} 月度IQC抽检不合格次数偏多",
+                    detail=f"IQC抽检不合格 {unqualified} 次（进料{iqc_batch}批/合格{qualified_batch}批），"
+                           f"超过预警阈值(>2次)",
+                    data={"supplier_name": supplier, "iqc_batch": iqc_batch,
+                          "qualified_batch": qualified_batch, "unqualified": unqualified},
                 )
 
     except Exception as e:
-        logger.error("巡检规则 [supplier_iqc_low] 执行失败: %s", e)
+        logger.error("巡检规则 [supplier_iqc_unqualified] 执行失败: %s", e)
 
 
 def _check_retest_backlog():
@@ -354,7 +364,7 @@ def _check_retest_backlog():
 ALL_CHECK_RULES = [
     ("return_volume_spike", _check_return_volume_spike),
     ("defect_concentration", _check_defect_concentration),
-    ("supplier_iqc_low", _check_supplier_iqc),
+    ("supplier_iqc_unqualified", _check_supplier_iqc),
     ("retest_backlog", _check_retest_backlog),
 ]
 

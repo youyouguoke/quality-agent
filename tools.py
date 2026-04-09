@@ -483,7 +483,7 @@ def tool_baseline_compare(indicator: str, actual_value: float,
     将实际质量指标与知识库中的基线标准进行对比，返回判定结果。
 
     Args:
-        indicator: 指标名称（如 "退货率", "IQC批次合格率", "直通率"）
+        indicator: 指标名称（如 "退货率", "IQC抽检不合格次数", "直通率"）
         actual_value: 实际数值（百分比形式，如 2.5 表示 2.5%）
         sku_category: SKU类别（如 "空气净化器"），退货率对比时需要
         compare_type: 对比类型，"退货率"/"供应商IQC"/"代工厂"
@@ -520,18 +520,17 @@ def tool_baseline_compare(indicator: str, actual_value: float,
                 result["assessment"] = f"退货率 {actual_value}% 超过严重线（>{bl['critical']}%），需立即处理"
 
         elif compare_type == "供应商IQC":
-            if actual_value >= 99.5:
-                result["level"] = "优秀"
-                result["assessment"] = f"直通率 {actual_value}% 达到优秀水平（≥99.5%）"
-            elif actual_value >= 99:
-                result["level"] = "合格"
-                result["assessment"] = f"直通率 {actual_value}% 达到合格水平（≥99%）"
-            elif actual_value >= 98:
+            # actual_value 为月度IQC抽检不合格次数
+            unqualified = int(actual_value)
+            if unqualified <= 2:
+                result["level"] = "正常"
+                result["assessment"] = f"月度IQC抽检不合格 {unqualified} 次，在正常范围内（≤2次）"
+            elif unqualified <= 3:
                 result["level"] = "预警"
-                result["assessment"] = f"直通率 {actual_value}% 处于预警区间（98%-99%），需关注"
+                result["assessment"] = f"月度IQC抽检不合格 {unqualified} 次，超过预警阈值（>2次），需关注"
             else:
-                result["level"] = "不合格"
-                result["assessment"] = f"直通率 {actual_value}% 低于严重线（<98%），需立即改善"
+                result["level"] = "严重"
+                result["assessment"] = f"月度IQC抽检不合格 {unqualified} 次，超过严重阈值（>3次），需立即改善"
 
         elif compare_type == "代工厂":
             if actual_value >= 98:
@@ -1030,12 +1029,12 @@ OPENAI_TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "baseline_compare",
-            "description": "将实际质量指标与基线标准进行对比，返回判定结果（正常/预警/严重）。可对比退货率、IQC合格率、代工厂直通率等指标。在查询到实际数据后应主动调用此工具进行基线对比。",
+            "description": "将实际质量指标与基线标准进行对比，返回判定结果（正常/预警/严重）。可对比退货率、供应商IQC抽检不合格次数、代工厂直通率等指标。在查询到实际数据后应主动调用此工具进行基线对比。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "indicator": {"type": "string", "description": "指标名称，如'退货率'、'IQC批次合格率'、'直通率'"},
-                    "actual_value": {"type": "number", "description": "实际数值（百分比形式），如 2.5 表示 2.5%"},
+                    "indicator": {"type": "string", "description": "指标名称，如'退货率'、'IQC抽检不合格次数'、'直通率'"},
+                    "actual_value": {"type": "number", "description": "实际数值（退货率为百分比如2.5表示2.5%，IQC不合格次数为整数如3）"},
                     "sku_category": {"type": "string", "description": "SKU类别（退货率对比时需要），如'空气净化器'、'扫地机器人'"},
                     "compare_type": {
                         "type": "string",
