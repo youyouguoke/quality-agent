@@ -18,6 +18,12 @@ from knowledge_base import build_knowledge_prompt
 from models import AgentStep, ChatMessage, ToolCallRecord
 from skill_manager import build_skill_prompt, match_skills
 from tools import OPENAI_TOOLS_SCHEMA, execute_tool
+from user_profile import (
+    build_user_prompt,
+    record_interaction,
+    try_detect_profile_from_query,
+    update_profile,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -225,14 +231,27 @@ def run_master_agent(
     client = get_llm_client()
     tool_records: list[ToolCallRecord] = []
 
+    # 自动检测用户画像信息（从用户输入中识别角色/偏好）
+    if user:
+        detected = try_detect_profile_from_query(query)
+        if detected:
+            update_profile(user, **detected)
+            logger.info("自动识别用户画像 [%s]: %s", user, detected)
+        record_interaction(user, query)
+
     # 匹配相关 Skill
     matched_skills = match_skills(query)
     skill_prompt = build_skill_prompt(matched_skills)
     if matched_skills:
         logger.info("匹配到 Skill: %s", [s["name"] for s in matched_skills])
 
-    # 构建 system prompt = 基础 prompt + 数据上下文 + 知识上下文 + 匹配的 Skill
+    # 构建 system prompt = 基础 prompt + 数据上下文 + 用户画像 + 知识上下文 + 匹配的 Skill
     system_prompt = BASE_SYSTEM_PROMPT.format(data_context=_build_all_data_context())
+
+    # 注入用户画像（定制交互风格）
+    user_prompt = build_user_prompt(user)
+    if user_prompt:
+        system_prompt += "\n" + user_prompt
 
     # 注入知识库上下文（基线标准 + 相关术语/案例）
     knowledge_prompt = build_knowledge_prompt(query)

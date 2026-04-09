@@ -31,6 +31,8 @@ services:
       - /home/agentdata/quality-agent/skills:/app/skills
       # 知识库持久化 - 基线标准、历史案例等持续积累
       - /home/agentdata/quality-agent/knowledge:/app/knowledge
+      # 用户画像持久化
+      - /home/agentdata/quality-agent/user_profiles:/app/user_profiles
     networks:
       - quality-net
     healthcheck:

@@ -42,6 +42,7 @@ from models import (
     ErrorResponse,
     HealthStatus,
 )
+from user_profile import get_profile, update_profile
 
 # ======================== 日志配置 ========================
 logging.basicConfig(
@@ -242,6 +243,39 @@ async def trigger_check():
     run_all_checks()
     summary = get_alert_summary()
     return {"message": "巡检完成", "summary": summary}
+
+
+# ======================== 用户画像接口 ========================
+
+@app.get(
+    "/agent/profile/{username}",
+    summary="查询用户画像",
+    description="获取指定用户的画像信息（角色、偏好、历史统计等）。",
+)
+async def get_user_profile(username: str):
+    """查询用户画像"""
+    profile = get_profile(username)
+    return {"username": username, "profile": profile}
+
+
+@app.put(
+    "/agent/profile/{username}",
+    summary="更新用户画像",
+    description="手动设置用户画像（角色、部门、关注领域、详细程度等）。",
+)
+async def set_user_profile(username: str, raw_request: Request):
+    """
+    更新用户画像。请求体示例：
+    {"role": "quality_engineer", "department": "品质部", "detail_level": "detailed"}
+    """
+    body = await raw_request.json()
+    # 只允许更新的字段
+    allowed = {"role", "department", "focus_areas", "detail_level", "notes"}
+    fields = {k: v for k, v in body.items() if k in allowed}
+    if not fields:
+        raise HTTPException(status_code=400, detail="没有可更新的字段")
+    profile = update_profile(username, **fields)
+    return {"username": username, "profile": profile}
 
 
 # ======================== 启动入口 ========================

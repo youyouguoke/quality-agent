@@ -23,6 +23,7 @@ services:
       - quality-agent-logs:/app/logs
       - quality-agent-skills:/app/skills
       - quality-agent-knowledge:/app/knowledge
+      - quality-agent-profiles:/app/user_profiles
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/agent/health', timeout=5)"]
       interval: 30s
@@ -54,3 +55,4 @@ volumes:
   quality-agent-logs:
   quality-agent-skills:
   quality-agent-knowledge:
+  quality-agent-profiles:
