@@ -247,44 +247,36 @@ def tool_return_overview(sku_name: str = None, factory: str = None, _user: str =
     if factory:
         mcp_args["production_factory"] = factory
 
-    # 权限错误标记：一旦检测到权限不足，直接终止所有维度查询
-    _permission_denied = False
-    _permission_error_msg = ""
+    # 权限错误：记录哪些维度无权限，但不终止整个函数
+    _NO_PERMISSION = "无权限，该维度数据不可用"
 
-    def _permission_reject() -> str:
-        """生成权限拒绝的标准返回"""
-        return json.dumps({
-            "error": "当前用户没有查询权限，无法获取客退分析数据。请联系管理员开通权限。",
-            "detail": _permission_error_msg,
-            "filter": {"sku_name": sku_name, "factory": factory},
-            "has_data": False,
-        }, ensure_ascii=False)
-
-    def _try_mcp(tool_name: str, args: dict = None) -> dict | list | None:
-        """尝试调用 MCP 工具，失败返回 None，权限不足时设置标记"""
-        nonlocal _permission_denied, _permission_error_msg
-        if _permission_denied:
-            return None  # 已检测到权限不足，跳过后续 MCP 调用
+    def _try_mcp(tool_name: str, args: dict = None) -> tuple[dict | list | None, bool]:
+        """
+        尝试调用 MCP 工具。
+        返回 (data, is_permission_error):
+          - 成功: (data, False)
+          - 权限不足: (None, True)
+          - 其他错误: (None, False)
+        """
         try:
             data = mcp_call(tool_name, args or mcp_args, user=_user)
             if isinstance(data, dict) and "error" in data:
                 error_msg = str(data["error"])
                 logger.warning("MCP [%s] 返回错误: %s", tool_name, error_msg)
                 if "权限" in error_msg:
-                    _permission_denied = True
-                    _permission_error_msg = error_msg
-                return None
-            return data
+                    return None, True
+                return None, False
+            return data, False
         except Exception as e:
             logger.warning("MCP [%s] 调用异常: %s", tool_name, e)
-        return None
+        return None, False
 
     # ========== 1. 整体概况 ==========
     try:
-        mcp_data = _try_mcp("get_return_overview")
-        if _permission_denied:
-            return _permission_reject()
-        if mcp_data is not None:
+        mcp_data, perm_denied = _try_mcp("get_return_overview")
+        if perm_denied:
+            result["overview_error"] = _NO_PERMISSION
+        elif mcp_data is not None:
             # MCP 返回格式同原 SQL：[{total_returns, sku_names, ...}] 或 {total_returns, ...}
             o = mcp_data[0] if isinstance(mcp_data, list) and mcp_data else mcp_data
             if isinstance(o, dict):
@@ -301,17 +293,17 @@ def tool_return_overview(sku_name: str = None, factory: str = None, _user: str =
                     "repair_done_count": repair_done,
                     "repair_completion_rate": round(repair_done / total * 100, 2) if total else 0,
                 }
-        if "overview" not in result:
+        if "overview" not in result and "overview_error" not in result:
             result["overview_error"] = "MCP get_return_overview 未返回有效数据"
     except Exception as e:
         result["overview_error"] = str(e)
 
     # ========== 2. 受理原因分析（四分类） ==========
     try:
-        accept_rows = _try_mcp("get_accept_reason_analysis")
-        if _permission_denied:
-            return _permission_reject()
-        if accept_rows is not None:
+        accept_rows, perm_denied = _try_mcp("get_accept_reason_analysis")
+        if perm_denied:
+            result["accept_reason_error"] = _NO_PERMISSION
+        elif accept_rows is not None:
             # MCP 返回格式同原 SQL：[{accept_reason: '...', cnt: N}, ...]
             if isinstance(accept_rows, dict):
                 accept_rows = [accept_rows]
@@ -334,17 +326,17 @@ def tool_return_overview(sku_name: str = None, factory: str = None, _user: str =
                 accept_categories[cat] += cnt
                 accept_detail[cat][reason] = cnt
             result["accept_reason_analysis"] = {"categories": accept_categories, "detail": accept_detail}
-        else:
+        elif "accept_reason_error" not in result:
             result["accept_reason_error"] = "MCP get_accept_reason_analysis 未返回有效数据"
     except Exception as e:
         result["accept_reason_error"] = str(e)
 
     # ========== 3. 复测结果分析（仅有复测结果的数据，TOP5） ==========
     try:
-        retest_rows = _try_mcp("get_retest_result_analysis")
-        if _permission_denied:
-            return _permission_reject()
-        if retest_rows is not None:
+        retest_rows, perm_denied = _try_mcp("get_retest_result_analysis")
+        if perm_denied:
+            result["retest_result_error"] = _NO_PERMISSION
+        elif retest_rows is not None:
             # MCP 返回格式同原 SQL：[{retest_result: '...', cnt: N}, ...]
             if isinstance(retest_rows, dict):
                 retest_rows = [retest_rows]
@@ -355,17 +347,17 @@ def tool_return_overview(sku_name: str = None, factory: str = None, _user: str =
             if other_retest > 0:
                 retest_list.append({"retest_result": "其他", "count": other_retest})
             result["retest_result_analysis"] = {"total_with_result": retest_total, "top5": retest_list}
-        else:
+        elif "retest_result_error" not in result:
             result["retest_result_error"] = "MCP get_retest_result_analysis 未返回有效数据"
     except Exception as e:
         result["retest_result_error"] = str(e)
 
     # ========== 4. 不良原因分析（仅有复测结果的数据，多值拆分，TOP5） ==========
     try:
-        defect_rows = _try_mcp("get_defect_cause_analysis")
-        if _permission_denied:
-            return _permission_reject()
-        if defect_rows is not None:
+        defect_rows, perm_denied = _try_mcp("get_defect_cause_analysis")
+        if perm_denied:
+            result["defect_cause_error"] = _NO_PERMISSION
+        elif defect_rows is not None:
             # MCP 返回格式同原 SQL：[{defect_cause: '...'}, ...]
             if isinstance(defect_rows, dict):
                 defect_rows = [defect_rows]
@@ -385,17 +377,17 @@ def tool_return_overview(sku_name: str = None, factory: str = None, _user: str =
                 "top5": [{"defect_cause": k, "count": v} for k, v in top5_causes],
                 "other_count": other_cause_count, "total_distinct": len(cause_counter),
             }
-        else:
+        elif "defect_cause_error" not in result:
             result["defect_cause_error"] = "MCP get_defect_cause_analysis 未返回有效数据"
     except Exception as e:
         result["defect_cause_error"] = str(e)
 
     # ========== 5. 不良物料分析（仅有复测结果的数据，多值拆分，TOP5） ==========
     try:
-        material_rows = _try_mcp("get_defect_material_analysis")
-        if _permission_denied:
-            return _permission_reject()
-        if material_rows is not None:
+        material_rows, perm_denied = _try_mcp("get_defect_material_analysis")
+        if perm_denied:
+            result["defect_material_error"] = _NO_PERMISSION
+        elif material_rows is not None:
             # MCP 返回格式同原 SQL：[{defect_material: '...'}, ...]
             if isinstance(material_rows, dict):
                 material_rows = [material_rows]
@@ -415,17 +407,17 @@ def tool_return_overview(sku_name: str = None, factory: str = None, _user: str =
                 "top5": [{"defect_material": k, "count": v} for k, v in top5_materials],
                 "other_count": other_material_count, "total_distinct": len(material_counter),
             }
-        else:
+        elif "defect_material_error" not in result:
             result["defect_material_error"] = "MCP get_defect_material_analysis 未返回有效数据"
     except Exception as e:
         result["defect_material_error"] = str(e)
 
     # ========== 6. 责任归属分析（仅有复测结果的数据，多值拆分，TOP10） ==========
     try:
-        resp_rows = _try_mcp("get_responsibility_analysis")
-        if _permission_denied:
-            return _permission_reject()
-        if resp_rows is not None:
+        resp_rows, perm_denied = _try_mcp("get_responsibility_analysis")
+        if perm_denied:
+            result["responsibility_error"] = _NO_PERMISSION
+        elif resp_rows is not None:
             # MCP 返回格式同原 SQL：[{responsibility_owner: '...'}, ...]
             if isinstance(resp_rows, dict):
                 resp_rows = [resp_rows]
@@ -446,30 +438,39 @@ def tool_return_overview(sku_name: str = None, factory: str = None, _user: str =
                 "top10": [{"responsibility_owner": k, "count": v} for k, v in top10_resp],
                 "other_count": other_resp_count, "total_distinct": len(resp_counter),
             }
-        else:
+        elif "responsibility_error" not in result:
             result["responsibility_error"] = "MCP get_responsibility_analysis 未返回有效数据"
     except Exception as e:
         result["responsibility_error"] = str(e)
 
     # ========== 7. 处理状况分析 ==========
     try:
-        state_rows = _try_mcp("get_state_analysis")
-        if _permission_denied:
-            return _permission_reject()
-        if state_rows is not None:
+        state_rows, perm_denied = _try_mcp("get_state_analysis")
+        if perm_denied:
+            result["state_error"] = _NO_PERMISSION
+        elif state_rows is not None:
             # MCP 返回格式同原 SQL：[{state: '...', cnt: N}, ...]
             if isinstance(state_rows, dict):
                 state_rows = [state_rows]
             result["state_analysis"] = [
                 {"state": r.get("state") or "未知", "count": r.get("cnt", 0)} for r in state_rows
             ]
-        else:
+        elif "state_error" not in result:
             result["state_error"] = "MCP get_state_analysis 未返回有效数据"
     except Exception as e:
         result["state_error"] = str(e)
 
     result["filter"] = {"sku_name": sku_name, "factory": factory}
     result["has_data"] = bool(result.get("overview", {}).get("total_returns"))
+
+    # 标记哪些维度因权限不足而缺失，告知 LLM 不要用其他工具补查
+    no_perm_fields = [k for k, v in result.items() if v == _NO_PERMISSION]
+    if no_perm_fields:
+        result["permission_note"] = (
+            f"以下维度因当前用户无权限而不可用: {no_perm_fields}。"
+            "请勿使用其他工具（如query_table、aggregate_query）查询这些数据。"
+        )
+
     return json.dumps(result, ensure_ascii=False, default=str)
 
 

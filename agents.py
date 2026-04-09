@@ -207,29 +207,6 @@ def run_master_agent(
             logger.info("调用工具: %s(%s)", func_name, func_args)
             result = execute_tool(func_name, func_args, user=user)
 
-            # 检测权限错误：工具返回权限拒绝时，直接终止，不再继续调用
-            try:
-                result_data = json.loads(result)
-                if isinstance(result_data, dict) and "error" in result_data and "权限" in str(result_data["error"]):
-                    logger.warning("权限不足，终止工具调用: %s", result_data["error"])
-                    answer = f"抱歉，{result_data['error']}"
-                    save_to_session(session_id, "user", query)
-                    save_to_session(session_id, "assistant", answer)
-                    return {
-                        "answer": answer,
-                        "session_id": session_id,
-                        "agent_used": "quality_agent",
-                        "steps": [AgentStep(
-                            agent="quality_agent",
-                            action=query,
-                            tool_calls=tool_records,
-                        )] if tool_records else [],
-                        "data": None,
-                        "metadata": {"rounds": round_idx + 1, "terminated_by": "permission_denied"},
-                    }
-            except (json.JSONDecodeError, TypeError):
-                pass
-
             # 截断过长结果
             if len(result) > 6000:
                 result = result[:6000] + "\n...(数据已截断)"
