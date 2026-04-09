@@ -22,7 +22,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from agents import clear_session, run_master_agent
@@ -88,7 +88,7 @@ app.add_middleware(
     summary="对话接口",
     description="智能体管理平台调用此接口与质量管理Agent进行自然语言交互。",
 )
-async def chat(request: ChatRequest):
+async def chat(request: ChatRequest, raw_request: Request):
     """
     核心对话接口 - 与智能体管理平台对齐（参照OA agent协议）。
 
@@ -101,6 +101,9 @@ async def chat(request: ChatRequest):
     {"message": "该SN的生产数据如下..."}
     ```
     """
+    # 打印请求头，用于确认平台是否传递了用户身份（如 smartmi-ua）
+    logger.info("请求头: %s", dict(raw_request.headers))
+
     start_time = time.time()
 
     try:

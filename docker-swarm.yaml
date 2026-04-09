@@ -1,0 +1,52 @@
+# ========================================
+# Docker Swarm 部署配置
+# ========================================
+# 构建镜像: docker-compose build
+# 部署命令: docker stack deploy -c docker-swarm.yaml quality-stack
+# 查看状态: docker stack services quality-stack
+# 移除服务: docker stack rm quality-stack
+
+services:
+  # ========================================
+  # 质量管理 AI Agent 服务
+  # ========================================
+  quality-agent:
+    image: quality-agent:${QUALITY_AGENT_VERSION:-1.0.0}
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+    volumes:
+      - quality-agent-logs:/app/logs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/agent/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+      placement:
+        constraints:
+          - node.role == manager
+    networks:
+      - quality-net
+
+networks:
+  quality-net:
+    driver: overlay
+    attachable: true
+
+volumes:
+  quality-agent-logs:
