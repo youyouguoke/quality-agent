@@ -520,18 +520,18 @@ def tool_baseline_compare(indicator: str, actual_value: float,
                 result["assessment"] = f"退货率 {actual_value}% 超过严重线（>{bl['critical']}%），需立即处理"
 
         elif compare_type == "供应商IQC":
-            if actual_value >= 98:
+            if actual_value >= 99.5:
                 result["level"] = "优秀"
-                result["assessment"] = f"IQC批次合格率 {actual_value}% 达到优秀水平（≥98%）"
-            elif actual_value >= 95:
+                result["assessment"] = f"直通率 {actual_value}% 达到优秀水平（≥99.5%）"
+            elif actual_value >= 99:
                 result["level"] = "合格"
-                result["assessment"] = f"IQC批次合格率 {actual_value}% 达到合格水平（≥95%）"
-            elif actual_value >= 90:
+                result["assessment"] = f"直通率 {actual_value}% 达到合格水平（≥99%）"
+            elif actual_value >= 98:
                 result["level"] = "预警"
-                result["assessment"] = f"IQC批次合格率 {actual_value}% 处于预警区间（90%-95%），需关注"
+                result["assessment"] = f"直通率 {actual_value}% 处于预警区间（98%-99%），需关注"
             else:
                 result["level"] = "不合格"
-                result["assessment"] = f"IQC批次合格率 {actual_value}% 低于合格线（<90%），需立即改善"
+                result["assessment"] = f"直通率 {actual_value}% 低于严重线（<98%），需立即改善"
 
         elif compare_type == "代工厂":
             if actual_value >= 98:

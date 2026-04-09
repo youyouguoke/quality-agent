@@ -257,7 +257,7 @@ def _check_defect_concentration():
 
 
 def _check_supplier_iqc():
-    """规则3: 供应商 IQC 合格率低于基线检测"""
+    """规则3: 供应商 IQC 直通率低于基线检测"""
     try:
         from database import execute_query
 
@@ -277,21 +277,21 @@ def _check_supplier_iqc():
             except (ValueError, TypeError):
                 continue
 
-            if pass_rate < 90:
+            if pass_rate < 98:
                 _add_alert(
                     level="critical",
                     rule="supplier_iqc_low",
-                    title=f"供应商 {supplier} IQC合格率不达标",
-                    detail=f"IQC批次合格率 {pass_rate:.1f}%，低于合格线(90%)，需立即改善",
+                    title=f"供应商 {supplier} 直通率不达标",
+                    detail=f"直通率 {pass_rate:.1f}%，低于严重线(<98%)，需立即改善",
                     data={"supplier_name": supplier, "iqc_batch_pass_rate": pass_rate,
                           "reject_rate": r.get("reject_rate")},
                 )
-            elif pass_rate < 95:
+            elif pass_rate < 99:
                 _add_alert(
                     level="warning",
                     rule="supplier_iqc_low",
-                    title=f"供应商 {supplier} IQC合格率预警",
-                    detail=f"IQC批次合格率 {pass_rate:.1f}%，处于预警区间(90%-95%)",
+                    title=f"供应商 {supplier} 直通率预警",
+                    detail=f"直通率 {pass_rate:.1f}%，处于预警区间(98%-99%)",
                     data={"supplier_name": supplier, "iqc_batch_pass_rate": pass_rate,
                           "reject_rate": r.get("reject_rate")},
                 )
@@ -301,7 +301,7 @@ def _check_supplier_iqc():
 
 
 def _check_retest_backlog():
-    """规则4: 复测积压检测"""
+    """规则4: SKU 复测完成率检测"""
     try:
         from database import execute_query
 
@@ -328,8 +328,8 @@ def _check_retest_backlog():
                 _add_alert(
                     level="critical",
                     rule="retest_backlog",
-                    title=f"{sku} 复测严重积压",
-                    detail=f"复测完成率仅 {completion_rate:.1f}%（{retested}/{total}），"
+                    title=f"{sku} SKU复测完成率严重偏低",
+                    detail=f"SKU复测完成率仅 {completion_rate:.1f}%（{retested}/{total}），"
                            f"低于严重阈值(60%)，需立即催办",
                     data={"sku_name": sku, "total": total, "retested": retested,
                           "completion_rate": round(completion_rate, 1)},
@@ -338,8 +338,8 @@ def _check_retest_backlog():
                 _add_alert(
                     level="warning",
                     rule="retest_backlog",
-                    title=f"{sku} 复测积压",
-                    detail=f"复测完成率 {completion_rate:.1f}%（{retested}/{total}），"
+                    title=f"{sku} SKU复测完成率偏低",
+                    detail=f"SKU复测完成率 {completion_rate:.1f}%（{retested}/{total}），"
                            f"低于预警阈值(80%)",
                     data={"sku_name": sku, "total": total, "retested": retested,
                           "completion_rate": round(completion_rate, 1)},
