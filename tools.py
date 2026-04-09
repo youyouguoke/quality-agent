@@ -247,12 +247,21 @@ def tool_return_overview(sku_name: str = None, factory: str = None, _user: str =
     if factory:
         mcp_args["production_factory"] = factory
 
+    # 权限错误标记：一旦检测到权限不足，直接终止所有维度查询
+    _permission_denied = False
+    _permission_error_msg = ""
+
     def _try_mcp(tool_name: str, args: dict = None) -> dict | list | None:
-        """尝试调用 MCP 工具，失败返回 None"""
+        """尝试调用 MCP 工具，失败返回 None，权限不足时设置标记"""
+        nonlocal _permission_denied, _permission_error_msg
         try:
             data = mcp_call(tool_name, args or mcp_args, user=_user)
             if isinstance(data, dict) and "error" in data:
-                logger.warning("MCP [%s] 返回错误: %s", tool_name, data["error"])
+                error_msg = str(data["error"])
+                logger.warning("MCP [%s] 返回错误: %s", tool_name, error_msg)
+                if "权限" in error_msg:
+                    _permission_denied = True
+                    _permission_error_msg = error_msg
                 return None
             return data
         except Exception as e:
@@ -262,6 +271,14 @@ def tool_return_overview(sku_name: str = None, factory: str = None, _user: str =
     # ========== 1. 整体概况 ==========
     try:
         mcp_data = _try_mcp("get_return_overview")
+        # 权限不足，直接返回拒绝
+        if _permission_denied:
+            return json.dumps({
+                "error": "当前用户没有查询权限，无法获取客退分析数据。请联系管理员开通权限。",
+                "detail": _permission_error_msg,
+                "filter": {"sku_name": sku_name, "factory": factory},
+                "has_data": False,
+            }, ensure_ascii=False)
         if mcp_data is not None:
             # MCP 返回格式同原 SQL：[{total_returns, sku_names, ...}] 或 {total_returns, ...}
             o = mcp_data[0] if isinstance(mcp_data, list) and mcp_data else mcp_data
