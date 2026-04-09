@@ -576,6 +576,158 @@ def tool_search_knowledge(query: str) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
+# ======================== 根因推理链工具 ========================
+
+def tool_root_cause_analysis(sku_name: str = None, defect_material: str = None,
+                             defect_cause: str = None, limit: int = 50) -> str:
+    """
+    根因推理链分析：跨表关联客退数据、SN物料、供应商质量，构建完整证据链。
+
+    从客退现象出发，自动完成：
+    1. 筛选相关客退SN（按SKU/不良物料/不良原因过滤）
+    2. 追溯这些SN的关键物料和供应商
+    3. 统计不良物料→供应商的集中度
+    4. 查询嫌疑供应商的IQC质量数据
+    5. 统计维修实际更换的物料
+    """
+    result = {}
+
+    try:
+        # ====== 1. 从 return_data 获取相关客退SN ======
+        where = {}
+        if sku_name:
+            where["sku_name"] = sku_name
+        # 只取有复测结果的记录（有实际不良判定）
+        return_rows = query_table(
+            "return_data",
+            columns=["sn_no", "sku_name", "production_factory", "defect_cause",
+                     "defect_material", "defect_material_batch", "defect_material_supplier",
+                     "retest_result", "responsibility_owner", "state"],
+            where=where,
+            limit=limit,
+        )
+        return_rows = _serialize_rows(return_rows)
+
+        # 如果指定了不良物料或不良原因，做二次过滤
+        if defect_material:
+            return_rows = [r for r in return_rows
+                          if r.get("defect_material") and defect_material in str(r["defect_material"])]
+        if defect_cause:
+            return_rows = [r for r in return_rows
+                          if r.get("defect_cause") and defect_cause in str(r["defect_cause"])]
+
+        result["return_count"] = len(return_rows)
+        result["filter"] = {"sku_name": sku_name, "defect_material": defect_material,
+                            "defect_cause": defect_cause}
+
+        if not return_rows:
+            result["message"] = "未找到匹配的客退数据"
+            return json.dumps(result, ensure_ascii=False, default=str)
+
+        # ====== 2. 统计不良物料→供应商集中度 ======
+        material_supplier_counter: dict[str, dict[str, int]] = {}  # {物料: {供应商: 数量}}
+        batch_counter: dict[str, int] = {}  # {批次号: 数量}
+        sn_list = []
+
+        for row in return_rows:
+            sn = row.get("sn_no")
+            if sn:
+                sn_list.append(sn)
+
+            # 拆分多值字段
+            materials = [m.strip() for m in str(row.get("defect_material") or "").split(",") if m.strip()]
+            suppliers = [s.strip() for s in str(row.get("defect_material_supplier") or "").split(",") if s.strip()]
+            batches = [b.strip() for b in str(row.get("defect_material_batch") or "").split(",") if b.strip()]
+
+            for mat in materials:
+                if mat not in material_supplier_counter:
+                    material_supplier_counter[mat] = {}
+                for sup in suppliers:
+                    material_supplier_counter[mat][sup] = material_supplier_counter[mat].get(sup, 0) + 1
+
+            for batch in batches:
+                batch_counter[batch] = batch_counter.get(batch, 0) + 1
+
+        # 整理不良物料→供应商关联
+        material_supplier_analysis = []
+        for mat, suppliers in material_supplier_counter.items():
+            for sup, cnt in sorted(suppliers.items(), key=lambda x: x[1], reverse=True):
+                material_supplier_analysis.append({
+                    "defect_material": mat,
+                    "supplier": sup,
+                    "affected_count": cnt,
+                })
+        result["material_supplier_trace"] = material_supplier_analysis[:20]
+
+        # 整理批次集中度
+        if batch_counter:
+            top_batches = sorted(batch_counter.items(), key=lambda x: x[1], reverse=True)[:10]
+            result["batch_concentration"] = [
+                {"batch": b, "count": c} for b, c in top_batches
+            ]
+
+        # ====== 3. 追溯SN关键物料（抽样前10个SN） ======
+        sample_sns = sn_list[:10]
+        if sample_sns:
+            sn_materials = []
+            for sn in sample_sns:
+                try:
+                    mats = query_table("sn_quality_key_material", where={"sn_no": sn})
+                    for m in _serialize_rows(mats):
+                        m["from_sn"] = sn
+                        sn_materials.append(m)
+                except Exception:
+                    pass
+            result["sn_key_materials_sample"] = sn_materials[:50]
+
+        # ====== 4. 查询嫌疑供应商的IQC质量 ======
+        suspect_suppliers = set()
+        for item in material_supplier_analysis[:5]:
+            sup = item.get("supplier")
+            if sup:
+                suspect_suppliers.add(sup)
+
+        supplier_quality = {}
+        for sup in suspect_suppliers:
+            try:
+                iqc = query_table("supplier_quality_iqc", where={"supplier_name": sup})
+                iqc = _serialize_rows(iqc)
+                monthly = query_table("supplier_quality_iqc_monthly",
+                                      where={"supplier_name": sup}, order_by="ic_month")
+                monthly = _serialize_rows(monthly)
+                supplier_quality[sup] = {
+                    "iqc_summary": iqc[:5] if iqc else [],
+                    "monthly_trend": monthly[-6:] if monthly else [],
+                }
+            except Exception as e:
+                supplier_quality[sup] = {"error": str(e)}
+        result["suspect_supplier_quality"] = supplier_quality
+
+        # ====== 5. 统计维修实际更换的物料 ======
+        repair_material_counter: dict[str, int] = {}
+        for sn in sample_sns:
+            try:
+                repairs = query_table("maintain_consume_material", where={"sn_no": sn})
+                for r in repairs:
+                    mat_name = r.get("maintain_material_name", "")
+                    if mat_name:
+                        repair_material_counter[mat_name] = repair_material_counter.get(mat_name, 0) + (r.get("consume_material_count") or 1)
+            except Exception:
+                pass
+        if repair_material_counter:
+            sorted_repairs = sorted(repair_material_counter.items(), key=lambda x: x[1], reverse=True)
+            result["repair_materials"] = [
+                {"material_name": k, "total_consumed": v} for k, v in sorted_repairs[:10]
+            ]
+
+        result["has_data"] = True
+        return json.dumps(result, ensure_ascii=False, default=str)
+
+    except Exception as e:
+        logger.error("tool_root_cause_analysis 错误: %s", e)
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
 # ======================== 工具注册表 ========================
 # 将工具函数映射到名称，供 agents.py 分发调用
 
@@ -594,6 +746,7 @@ TOOL_REGISTRY: dict[str, callable] = {
     "return_overview": tool_return_overview,
     "baseline_compare": tool_baseline_compare,
     "search_knowledge": tool_search_knowledge,
+    "root_cause_analysis": tool_root_cause_analysis,
 }
 
 
@@ -865,6 +1018,23 @@ OPENAI_TOOLS_SCHEMA = [
                     "query": {"type": "string", "description": "搜索关键词，如'主板不良'、'IQC是什么'、'退货率基线'"},
                 },
                 "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "root_cause_analysis",
+            "description": "根因推理链分析：跨表关联客退数据、SN物料、供应商质量，一次性构建完整证据链。返回不良物料→供应商追溯、批次集中度、嫌疑供应商IQC质量、维修实际更换物料等多维度关联数据。适用于需要深入追溯退货根本原因的场景。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sku_name": {"type": "string", "description": "按SKU名称过滤（可选），如'米家空气净化器 4 Lite'"},
+                    "defect_material": {"type": "string", "description": "按不良物料名称过滤（可选），聚焦特定物料的根因追溯"},
+                    "defect_cause": {"type": "string", "description": "按不良原因过滤（可选），聚焦特定故障类型的根因追溯"},
+                    "limit": {"type": "integer", "description": "最大分析SN数量，默认50"},
+                },
+                "required": [],
             },
         },
     },
