@@ -18,11 +18,11 @@ _session_id: Optional[str] = None
 _initialized: bool = False
 
 
-def _build_headers(session_id: Optional[str] = None) -> dict:
-    """构建 MCP 请求头"""
+def _build_headers(session_id: Optional[str] = None, user: Optional[str] = None) -> dict:
+    """构建 MCP 请求头，user 不传时使用配置中的默认用户"""
     headers = {
         "Authorization": f"Bearer {MCP_CONFIG['auth_token']}",
-        "smartmi-ua": MCP_CONFIG["user"],
+        "smartmi-ua": user or MCP_CONFIG["user"],
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
     }
@@ -50,10 +50,10 @@ def _parse_response(resp) -> tuple[Optional[dict], Optional[str]]:
     return None, session
 
 
-def _mcp_post(payload: dict, session_id: Optional[str] = None) -> tuple[Optional[dict], Optional[str]]:
+def _mcp_post(payload: dict, session_id: Optional[str] = None, user: Optional[str] = None) -> tuple[Optional[dict], Optional[str]]:
     """发送 MCP JSON-RPC 请求"""
     data = json.dumps(payload).encode("utf-8")
-    headers = _build_headers(session_id)
+    headers = _build_headers(session_id, user=user)
     req = urllib.request.Request(MCP_CONFIG["url"], data=data, headers=headers)
     timeout = MCP_CONFIG["timeout"]
 
@@ -114,13 +114,14 @@ def reset_session():
 _call_id_counter = 10
 
 
-def call_tool(tool_name: str, arguments: dict[str, Any] = None) -> dict:
+def call_tool(tool_name: str, arguments: dict[str, Any] = None, user: str = None) -> dict:
     """
     调用 MCP 工具。
 
     Args:
         tool_name: MCP 工具名称（如 'get_return_overview'）
         arguments: 工具参数
+        user: 调用用户（透传为 smartmi-ua 请求头），不传时使用默认配置
 
     Returns:
         工具返回的结果字典。成功时包含 "content" 字段，失败时包含 "error" 字段。
@@ -150,7 +151,7 @@ def call_tool(tool_name: str, arguments: dict[str, Any] = None) -> dict:
                 "name": tool_name,
                 "arguments": arguments,
             },
-        }, session_id=session_id)
+        }, session_id=session_id, user=user)
 
         if result is None:
             return {"error": "MCP 返回空响应"}

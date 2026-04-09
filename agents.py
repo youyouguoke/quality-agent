@@ -134,9 +134,13 @@ def run_master_agent(
     query: str,
     session_id: Optional[str] = None,
     history: Optional[list[ChatMessage]] = None,
+    user: Optional[str] = None,
 ) -> dict[str, Any]:
     """
     单层Agent入口：直接理解问题、调用工具、分析数据、返回结果。
+
+    Args:
+        user: 当前登录用户（来自请求头 smartmi-ua），透传给 MCP 调用。
     """
     if session_id is None:
         session_id = str(uuid.uuid4())
@@ -201,7 +205,7 @@ def run_master_agent(
                 func_args = {}
 
             logger.info("调用工具: %s(%s)", func_name, func_args)
-            result = execute_tool(func_name, func_args)
+            result = execute_tool(func_name, func_args, user=user)
 
             # 截断过长结果
             if len(result) > 6000:

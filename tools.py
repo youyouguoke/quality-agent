@@ -221,7 +221,7 @@ def tool_sku_overview(sku_name: str) -> str:
     return json.dumps(result, ensure_ascii=False)
 
 
-def tool_return_overview(sku_name: str = None, factory: str = None) -> str:
+def tool_return_overview(sku_name: str = None, factory: str = None, _user: str = None) -> str:
     """
     客退分析报告：按7个维度生成结构化分析数据。
     通过 MCP 工具获取原始数据，本地完成数据加工。
@@ -250,7 +250,7 @@ def tool_return_overview(sku_name: str = None, factory: str = None) -> str:
     def _try_mcp(tool_name: str, args: dict = None) -> dict | list | None:
         """尝试调用 MCP 工具，失败返回 None"""
         try:
-            data = mcp_call(tool_name, args or mcp_args)
+            data = mcp_call(tool_name, args or mcp_args, user=_user)
             if isinstance(data, dict) and "error" in data:
                 logger.warning("MCP [%s] 返回错误: %s", tool_name, data["error"])
                 return None
@@ -458,12 +458,15 @@ TOOL_REGISTRY: dict[str, callable] = {
 }
 
 
-def execute_tool(tool_name: str, arguments: dict) -> str:
+def execute_tool(tool_name: str, arguments: dict, user: str = None) -> str:
     """根据名称执行工具，返回 JSON 字符串结果"""
     func = TOOL_REGISTRY.get(tool_name)
     if func is None:
         return json.dumps({"error": f"未知工具: {tool_name}"}, ensure_ascii=False)
     try:
+        # 对需要 MCP 调用的工具，注入 _user 参数
+        if tool_name == "return_overview" and user:
+            arguments["_user"] = user
         return func(**arguments)
     except TypeError as e:
         return json.dumps({"error": f"工具参数错误: {e}"}, ensure_ascii=False)

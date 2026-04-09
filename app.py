@@ -101,7 +101,8 @@ async def chat(request: ChatRequest, raw_request: Request):
     {"message": "该SN的生产数据如下..."}
     ```
     """
-    # 打印请求头，用于确认平台是否传递了用户身份（如 smartmi-ua）
+    # 从请求头提取调用用户（smartmi-ua），透传给 MCP 调用
+    caller_user = raw_request.headers.get("smartmi-ua")
     logger.info("请求头: %s", dict(raw_request.headers))
 
     start_time = time.time()
@@ -110,6 +111,7 @@ async def chat(request: ChatRequest, raw_request: Request):
         result = run_master_agent(
             query=request.message,
             session_id=request.session_id,
+            user=caller_user,
         )
 
         elapsed = time.time() - start_time
