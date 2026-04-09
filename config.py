@@ -42,6 +42,18 @@ MCP_CONFIG = {
     "timeout": int(os.getenv("MCP_TIMEOUT", 60)),
 }
 
+# ======================== 预警监控配置 ========================
+ALERT_CONFIG = {
+    # 巡检间隔（秒），默认 4 小时
+    "check_interval": int(os.getenv("ALERT_INTERVAL", 14400)),
+    # 是否启用定时巡检
+    "enabled": os.getenv("ALERT_ENABLED", "true").lower() == "true",
+    # 告警记录最大保留条数
+    "max_alerts": int(os.getenv("ALERT_MAX_RECORDS", 500)),
+    # Webhook 通知地址（可选，为空则不推送）
+    "webhook_url": os.getenv("ALERT_WEBHOOK_URL", ""),
+}
+
 # ======================== 质量数据表映射 ========================
 # 现有 MySQL 数据库中的质量数据资产表名
 TABLE_NAMES = {

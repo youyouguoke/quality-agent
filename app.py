@@ -26,6 +26,14 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from agents import clear_session, run_master_agent
+from alert_monitor import (
+    acknowledge_alert,
+    get_alert_summary,
+    get_alerts,
+    run_all_checks,
+    start_monitor,
+    stop_monitor,
+)
 from config import API_CONFIG, LLM_CONFIG
 from database import get_all_table_info, get_pool
 from models import (
@@ -53,7 +61,14 @@ async def lifespan(app: FastAPI):
         logger.info("MySQL 连接池就绪")
     except Exception as e:
         logger.warning("MySQL 连接池初始化失败（服务仍启动，查询时会重试）: %s", e)
+
+    # 启动质量预警巡检线程
+    start_monitor()
+
     yield
+
+    # 停止巡检线程
+    stop_monitor()
     logger.info("质量管理 AI Agent 系统已关闭")
 
 
@@ -189,6 +204,44 @@ async def delete_session(session_id: str):
     """清除指定会话"""
     clear_session(session_id)
     return {"message": f"会话 {session_id} 已清除"}
+
+
+# ======================== 预警告警接口 ========================
+
+@app.get(
+    "/agent/alerts",
+    summary="查询质量预警",
+    description="查询系统自动巡检产生的质量异常告警列表。",
+)
+async def list_alerts(level: str = None, limit: int = 50):
+    """返回当前未确认的告警列表"""
+    alerts = get_alerts(level=level, limit=limit)
+    summary = get_alert_summary()
+    return {"summary": summary, "alerts": alerts}
+
+
+@app.post(
+    "/agent/alerts/{alert_id}/ack",
+    summary="确认告警",
+    description="确认（消除）一条告警，表示已知悉或已处理。",
+)
+async def ack_alert(alert_id: int):
+    """确认一条告警"""
+    if acknowledge_alert(alert_id):
+        return {"message": f"告警 {alert_id} 已确认"}
+    raise HTTPException(status_code=404, detail=f"告警 {alert_id} 不存在")
+
+
+@app.post(
+    "/agent/alerts/check",
+    summary="立即巡检",
+    description="立即触发一次质量巡检，不等待定时器。",
+)
+async def trigger_check():
+    """立即执行一次巡检"""
+    run_all_checks()
+    summary = get_alert_summary()
+    return {"message": "巡检完成", "summary": summary}
 
 
 # ======================== 启动入口 ========================

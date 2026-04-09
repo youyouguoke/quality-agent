@@ -36,7 +36,7 @@ RUN groupadd -r appuser && useradd -r -g appuser -d /app -s /sbin/nologin appuse
     && chown -R appuser:appuser /app
 
 # 复制应用代码
-COPY --chown=appuser:appuser app.py config.py database.py agents.py tools.py models.py mcp_client.py skill_manager.py knowledge_base.py ./
+COPY --chown=appuser:appuser app.py config.py database.py agents.py tools.py models.py mcp_client.py skill_manager.py knowledge_base.py alert_monitor.py ./
 
 # 复制 Skill 文件（初始技能定义）
 COPY --chown=appuser:appuser skills/ ./skills/

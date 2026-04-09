@@ -728,6 +728,44 @@ def tool_root_cause_analysis(sku_name: str = None, defect_material: str = None,
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
+# ======================== 告警查询工具 ========================
+
+def tool_get_alerts(level: str = None, limit: int = 20) -> str:
+    """
+    查询质量预警告警列表。
+
+    Args:
+        level: 过滤告警级别（critical/warning/info），不传则返回全部
+        limit: 返回条数上限
+    """
+    try:
+        from alert_monitor import get_alert_summary, get_alerts
+        alerts = get_alerts(level=level, acknowledged=False, limit=limit)
+        summary = get_alert_summary()
+        return json.dumps({
+            "summary": summary,
+            "alerts": alerts,
+        }, ensure_ascii=False, default=str)
+    except Exception as e:
+        logger.error("tool_get_alerts 错误: %s", e)
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+def tool_run_check_now() -> str:
+    """立即执行一次质量巡检（不等定时器），返回巡检后的告警摘要。"""
+    try:
+        from alert_monitor import get_alert_summary, run_all_checks
+        run_all_checks()
+        summary = get_alert_summary()
+        return json.dumps({
+            "message": "巡检完成",
+            "summary": summary,
+        }, ensure_ascii=False)
+    except Exception as e:
+        logger.error("tool_run_check_now 错误: %s", e)
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
 # ======================== 工具注册表 ========================
 # 将工具函数映射到名称，供 agents.py 分发调用
 
@@ -747,6 +785,8 @@ TOOL_REGISTRY: dict[str, callable] = {
     "baseline_compare": tool_baseline_compare,
     "search_knowledge": tool_search_knowledge,
     "root_cause_analysis": tool_root_cause_analysis,
+    "get_alerts": tool_get_alerts,
+    "run_check_now": tool_run_check_now,
 }
 
 
@@ -1034,6 +1074,37 @@ OPENAI_TOOLS_SCHEMA = [
                     "defect_cause": {"type": "string", "description": "按不良原因过滤（可选），聚焦特定故障类型的根因追溯"},
                     "limit": {"type": "integer", "description": "最大分析SN数量，默认50"},
                 },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_alerts",
+            "description": "查询质量预警告警列表。系统每4小时自动巡检，检测退货量突增、不良集中、供应商IQC不达标、复测积压等异常。返回未确认的告警及统计摘要。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "level": {
+                        "type": "string",
+                        "enum": ["critical", "warning", "info"],
+                        "description": "过滤告警级别（可选），不传则返回全部",
+                    },
+                    "limit": {"type": "integer", "description": "返回条数上限，默认20"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_check_now",
+            "description": "立即执行一次质量巡检（不等定时器），检测所有预警规则并返回告警摘要。当用户要求'检查一下当前质量状况'或'立即巡检'时调用。",
+            "parameters": {
+                "type": "object",
+                "properties": {},
                 "required": [],
             },
         },
