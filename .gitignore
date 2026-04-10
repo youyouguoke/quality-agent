@@ -29,6 +29,9 @@ verify_*.py
 # SQLite（旧文件）
 *.db
 
+# 运行时生成的用户画像数据（保留 .gitkeep）
+user_profiles/*.json
+
 # OS
 Thumbs.db
 .DS_Store
