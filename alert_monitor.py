@@ -100,23 +100,73 @@ def get_alert_summary() -> dict:
     }
 
 
-# ======================== Webhook 通知 ========================
+# ======================== Webhook 通知（飞书群机器人） ========================
+
+# 告警级别对应的颜色标签
+_LEVEL_COLORS = {
+    "critical": "red",
+    "warning": "orange",
+    "info": "blue",
+}
+
+_LEVEL_LABELS = {
+    "critical": "🔴 严重",
+    "warning": "🟡 预警",
+    "info": "🔵 信息",
+}
+
 
 def _try_webhook_notify(alert: dict):
-    """尝试通过 Webhook 推送告警（失败静默）"""
+    """通过飞书群机器人 Webhook 推送告警（失败静默）"""
     url = ALERT_CONFIG.get("webhook_url", "")
     if not url:
         return
 
+    level = alert.get("level", "info")
+    level_label = _LEVEL_LABELS.get(level, level)
+    color = _LEVEL_COLORS.get(level, "blue")
+
     try:
+        # 飞书交互式卡片消息格式
         payload = json.dumps({
-            "msgtype": "text",
-            "text": {
-                "content": f"【质量预警-{alert['level'].upper()}】\n"
-                           f"{alert['title']}\n"
-                           f"{alert['detail']}\n"
-                           f"时间: {alert['time']}"
-            }
+            "msg_type": "interactive",
+            "card": {
+                "header": {
+                    "title": {
+                        "tag": "plain_text",
+                        "content": f"质量预警 | {alert['title']}",
+                    },
+                    "template": color,
+                },
+                "elements": [
+                    {
+                        "tag": "div",
+                        "fields": [
+                            {
+                                "is_short": True,
+                                "text": {"tag": "lark_md", "content": f"**级别**\n{level_label}"},
+                            },
+                            {
+                                "is_short": True,
+                                "text": {"tag": "lark_md", "content": f"**规则**\n{alert.get('rule', '-')}"},
+                            },
+                        ],
+                    },
+                    {
+                        "tag": "div",
+                        "text": {
+                            "tag": "lark_md",
+                            "content": f"**详情**\n{alert['detail']}",
+                        },
+                    },
+                    {
+                        "tag": "note",
+                        "elements": [
+                            {"tag": "plain_text", "content": f"时间: {alert['time']}"},
+                        ],
+                    },
+                ],
+            },
         }, ensure_ascii=False).encode("utf-8")
 
         req = urllib.request.Request(
@@ -126,7 +176,7 @@ def _try_webhook_notify(alert: dict):
         with urllib.request.urlopen(req, timeout=10) as resp:
             resp.read()
     except Exception as e:
-        logger.debug("Webhook 推送失败: %s", e)
+        logger.debug("飞书 Webhook 推送失败: %s", e)
 
 
 # ======================== 巡检规则 ========================
