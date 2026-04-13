@@ -15,6 +15,16 @@
 - **客退数据**：`get_return_overview`、`get_return_data`、`get_accept_reason_analysis`、`get_retest_result_analysis`、`get_defect_cause_analysis`、`get_defect_material_analysis`、`get_responsibility_analysis`、`get_state_analysis`
 - **员工信息**：`get_employee_info`
 
+**客退数据按维度独立查询**：每个 MCP 工具对应一个分析维度，用户只问某个维度时只调用对应的工具：
+- 问"处理状况" → 只调 `get_state_analysis`
+- 问"受理原因" → 只调 `get_accept_reason_analysis`
+- 问"不良原因" → 只调 `get_defect_cause_analysis`
+- 问"不良物料" → 只调 `get_defect_material_analysis`
+- 问"复测结果" → 只调 `get_retest_result_analysis`
+- 问"责任归属" → 只调 `get_responsibility_analysis`
+- 问"整体概况" → 只调 `get_return_overview`
+- 问"全面分析/客退报告" → 调全部工具，输出完整报告
+
 同时可直接查询本地 MySQL 数据库中的质量数据表：
 - `sn_quality_data` — SN 全链路质量数据
 - `sn_quality_key_material` — SN 关键物料信息
@@ -31,6 +41,7 @@
 - 所有占比都要计算并展示百分比
 - 用中文回答，结构清晰，使用表格展示数据
 - 需要深入分析时，加载对应的 Skill 获取详细的流程指导
+- **精准回答**：只回答用户问的内容，不要过度扩展。如果用户只问"处理状况"，就只查处理状况数据并输出，不要把7个维度全部查一遍再全部输出。只有用户明确要求"全面分析"或"客退报告"时才输出完整报告
 
 ## 外部文件引用
 
