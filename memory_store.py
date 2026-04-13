@@ -26,12 +26,63 @@ import json
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 MEMORY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memory")
+
+# 记忆保留时长（默认30天）
+MEMORY_RETENTION_DAYS = 30
+
+
+def _is_expired(memory: dict) -> bool:
+    """判断一条记忆是否已过期"""
+    time_str = memory.get("time", "")
+    if not time_str:
+        return True
+    try:
+        mem_time = datetime.fromisoformat(time_str)
+        return datetime.now() - mem_time > timedelta(days=MEMORY_RETENTION_DAYS)
+    except (ValueError, TypeError):
+        return True
+
+
+def _cleanup_file(filepath: str) -> int:
+    """清理文件中过期的记忆，返回清理的条数"""
+    if not os.path.exists(filepath):
+        return 0
+
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+        valid = []
+        removed = 0
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                mem = json.loads(line)
+                if _is_expired(mem):
+                    removed += 1
+                else:
+                    valid.append(line)
+            except json.JSONDecodeError:
+                removed += 1
+
+        if removed > 0:
+            with open(filepath, "w", encoding="utf-8") as f:
+                for line in valid:
+                    f.write(line + "\n")
+            logger.info("清理过期记忆 [%s]: 删除 %d 条，保留 %d 条", filepath, removed, len(valid))
+
+        return removed
+    except Exception as e:
+        logger.error("清理记忆文件失败 [%s]: %s", filepath, e)
+        return 0
 
 # 记忆分类与用户问题的匹配关系
 _CATEGORY_KEYWORDS = {
@@ -52,7 +103,7 @@ def _safe_filename(name: str) -> str:
 
 def save_memory(category: str, subject: str, memory: dict) -> bool:
     """
-    保存一条分析记忆。
+    保存一条分析记忆。保存时自动清理过期记忆，同类型只保留最新一条。
 
     Args:
         category: 分类（sku/supplier/factory/root_cause/general）
@@ -70,9 +121,36 @@ def save_memory(category: str, subject: str, memory: dict) -> bool:
         memory["time"] = datetime.now().isoformat()
 
     try:
-        with open(filepath, "a", encoding="utf-8") as f:
-            f.write(json.dumps(memory, ensure_ascii=False, default=str) + "\n")
-        logger.info("已保存记忆 [%s/%s]: %s", category, subject, memory.get("type", ""))
+        # 1. 读取现有记忆
+        existing = []
+        if os.path.exists(filepath):
+            with open(filepath, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        existing.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+
+        # 2. 清理过期记忆
+        valid = [m for m in existing if not _is_expired(m)]
+
+        # 3. 同类型记忆去重：如果已有同 type 的记忆，替换为最新的
+        mem_type = memory.get("type", "")
+        if mem_type:
+            valid = [m for m in valid if m.get("type") != mem_type]
+
+        # 4. 追加新记忆
+        valid.append(memory)
+
+        # 5. 重写文件
+        with open(filepath, "w", encoding="utf-8") as f:
+            for m in valid:
+                f.write(json.dumps(m, ensure_ascii=False, default=str) + "\n")
+
+        logger.info("已保存记忆 [%s/%s]: %s（文件中共 %d 条）", category, subject, mem_type, len(valid))
         return True
     except Exception as e:
         logger.error("保存记忆失败 [%s/%s]: %s", category, subject, e)
@@ -83,12 +161,7 @@ def save_memory(category: str, subject: str, memory: dict) -> bool:
 
 def load_memories(category: str, subject: str, limit: int = 10) -> list[dict]:
     """
-    读取指定主题的历史记忆（最新的在前）。
-
-    Args:
-        category: 分类
-        subject: 主题
-        limit: 最多返回条数
+    读取指定主题的历史记忆（最新的在前，自动过滤过期记忆）。
     """
     filename = _safe_filename(subject) + ".jsonl"
     filepath = os.path.join(MEMORY_DIR, category, filename)
@@ -103,20 +176,21 @@ def load_memories(category: str, subject: str, limit: int = 10) -> list[dict]:
                 line = line.strip()
                 if line:
                     try:
-                        memories.append(json.loads(line))
+                        mem = json.loads(line)
+                        if not _is_expired(mem):
+                            memories.append(mem)
                     except json.JSONDecodeError:
                         continue
     except Exception as e:
         logger.error("读取记忆失败 [%s/%s]: %s", category, subject, e)
         return []
 
-    # 最新的在前
     memories.reverse()
     return memories[:limit]
 
 
 def load_all_memories_in_category(category: str, limit_per_file: int = 3) -> list[dict]:
-    """读取某个分类下所有文件的最近记忆"""
+    """读取某个分类下所有文件的最近记忆（自动过滤过期）"""
     dir_path = os.path.join(MEMORY_DIR, category)
     if not os.path.isdir(dir_path):
         return []
@@ -126,10 +200,9 @@ def load_all_memories_in_category(category: str, limit_per_file: int = 3) -> lis
         if not filename.endswith(".jsonl"):
             continue
         subject = filename.replace(".jsonl", "")
-        memories = load_memories(category, subject, limit=limit_per_file)
+        memories = load_memories(category, subject, limit=limit_per_file)  # 已内置过期过滤
         all_memories.extend(memories)
 
-    # 按时间排序（最新在前）
     all_memories.sort(key=lambda m: m.get("time", ""), reverse=True)
     return all_memories
 
