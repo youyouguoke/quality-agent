@@ -378,20 +378,20 @@ def _check_supplier_iqc() -> list[dict]:
             if unqualified <= 0:
                 continue
 
-            if unqualified > 2:
+            if unqualified > 3:
                 new_alerts.append(_add_alert(
                     level="critical", rule="supplier_iqc_unqualified",
                     title=f"供应商 {supplier} IQC抽检不合格次数过多",
-                    detail=f"不合格 {unqualified} 次（进料{iqc_batch}批/合格{qualified_batch}批），超过严重阈值(>2次)",
+                    detail=f"不合格 {unqualified} 次（进料{iqc_batch}批/合格{qualified_batch}批），超过严重阈值(>3次)",
                     data={"supplier_name": supplier, "month": "-",
                           "iqc_batch": iqc_batch, "qualified_batch": qualified_batch,
                           "unqualified": unqualified},
                 ))
-            elif unqualified > 1:
+            elif unqualified > 2:
                 new_alerts.append(_add_alert(
                     level="warning", rule="supplier_iqc_unqualified",
                     title=f"供应商 {supplier} IQC抽检不合格次数偏多",
-                    detail=f"不合格 {unqualified} 次（进料{iqc_batch}批/合格{qualified_batch}批），超过预警阈值(>1次)",
+                    detail=f"不合格 {unqualified} 次（进料{iqc_batch}批/合格{qualified_batch}批），超过预警阈值(>2次)",
                     data={"supplier_name": supplier, "month": "-",
                           "iqc_batch": iqc_batch, "qualified_batch": qualified_batch,
                           "unqualified": unqualified},
