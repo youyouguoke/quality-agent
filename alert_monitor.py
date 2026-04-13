@@ -350,52 +350,58 @@ def _check_defect_concentration() -> list[dict]:
 
 
 def _check_supplier_iqc() -> list[dict]:
-    """规则3: 供应商 IQC 抽检不合格次数检测"""
+    """规则3: 供应商最近一个月 IQC 抽检不合格次数检测（基于客退数据中的不良物料供应商）"""
     new_alerts = []
     try:
         from database import execute_query
 
+        # 从最近一个月的客退数据中，统计各不良物料供应商被关联的不合格次数
         sql = """
-            SELECT supplier_name,
-                   COALESCE(iqc_batch, 0) AS iqc_batch,
-                   COALESCE(qualified_batch, 0) AS qualified_batch
-            FROM supplier_quality_iqc
-            WHERE iqc_batch IS NOT NULL
+            SELECT defect_material_supplier, COUNT(*) AS unqualified_count
+            FROM return_data
+            WHERE return_time >= DATE_SUB(CURDATE(), INTERVAL 1 MONTH)
+              AND defect_material_supplier IS NOT NULL
+              AND defect_material_supplier != ''
+              AND retest_result IS NOT NULL
+              AND retest_result != ''
+            GROUP BY defect_material_supplier
+            ORDER BY unqualified_count DESC
         """
         rows = execute_query(sql)
         if not rows:
             return new_alerts
 
+        # 获取当前月份用于展示
+        current_month = datetime.now().strftime("%Y-%m")
+
         for r in rows:
-            supplier = r["supplier_name"]
-            try:
-                iqc_batch = int(r["iqc_batch"])
-                qualified_batch = int(r["qualified_batch"])
-            except (ValueError, TypeError):
-                continue
+            # defect_material_supplier 可能含逗号分隔的多个供应商，需拆分
+            raw_supplier = r["defect_material_supplier"]
+            unqualified = r["unqualified_count"]
 
-            unqualified = iqc_batch - qualified_batch
-            if unqualified <= 0:
-                continue
+            for supplier in str(raw_supplier).split(","):
+                supplier = supplier.strip()
+                if not supplier:
+                    continue
 
-            if unqualified > 3:
-                new_alerts.append(_add_alert(
-                    level="critical", rule="supplier_iqc_unqualified",
-                    title=f"供应商 {supplier} IQC抽检不合格次数过多",
-                    detail=f"不合格 {unqualified} 次（进料{iqc_batch}批/合格{qualified_batch}批），超过严重阈值(>3次)",
-                    data={"supplier_name": supplier, "month": "-",
-                          "iqc_batch": iqc_batch, "qualified_batch": qualified_batch,
-                          "unqualified": unqualified},
-                ))
-            elif unqualified > 2:
-                new_alerts.append(_add_alert(
-                    level="warning", rule="supplier_iqc_unqualified",
-                    title=f"供应商 {supplier} IQC抽检不合格次数偏多",
-                    detail=f"不合格 {unqualified} 次（进料{iqc_batch}批/合格{qualified_batch}批），超过预警阈值(>2次)",
-                    data={"supplier_name": supplier, "month": "-",
-                          "iqc_batch": iqc_batch, "qualified_batch": qualified_batch,
-                          "unqualified": unqualified},
-                ))
+                if unqualified > 3:
+                    new_alerts.append(_add_alert(
+                        level="critical", rule="supplier_iqc_unqualified",
+                        title=f"供应商 {supplier} 近一月IQC抽检不合格次数过多",
+                        detail=f"最近一个月不合格 {unqualified} 次，超过严重阈值(>3次)",
+                        data={"supplier_name": supplier, "month": current_month,
+                              "iqc_batch": "-", "qualified_batch": "-",
+                              "unqualified": unqualified},
+                    ))
+                elif unqualified > 2:
+                    new_alerts.append(_add_alert(
+                        level="warning", rule="supplier_iqc_unqualified",
+                        title=f"供应商 {supplier} 近一月IQC抽检不合格次数偏多",
+                        detail=f"最近一个月不合格 {unqualified} 次，超过预警阈值(>2次)",
+                        data={"supplier_name": supplier, "month": current_month,
+                              "iqc_batch": "-", "qualified_batch": "-",
+                              "unqualified": unqualified},
+                    ))
     except Exception as e:
         logger.error("巡检规则 [supplier_iqc_unqualified] 执行失败: %s", e)
     return new_alerts

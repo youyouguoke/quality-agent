@@ -13,13 +13,15 @@ description: 客退多维度分析报告，对客退机数据进行7个维度的
 维度与用户问题的对应关系：
 | 用户问题关键词 | 只查询 | 只输出 |
 |---|---|---|
-| 整体概况、退货量、有多少 | `get_return_overview` | 一、整体概况 |
-| 受理原因、退货原因、为什么退 | `get_accept_reason_analysis` | 二、受理原因分析 |
-| 复测结果、复测情况 | `get_retest_result_analysis` | 三、复测结果分析 |
-| 不良原因、故障原因 | `get_defect_cause_analysis` | 四、不良原因分析 |
-| 不良物料、坏了什么 | `get_defect_material_analysis` | 五、不良物料分析 |
-| 责任归属、谁的责任 | `get_responsibility_analysis` | 六、责任归属分析 |
-| 处理状况、处理进度、状态 | `get_state_analysis` | 七、处理状况分析 |
+| 整体概况、退货量、有多少 | `get_return_overview` | 整体概况 |
+| 受理原因、退货原因、为什么退 | `get_accept_reason_analysis` | 受理原因分析 |
+| 复测结果、复测情况 | `get_retest_result_analysis` | 复测结果分析 |
+| 不良原因、故障原因 | `get_defect_cause_analysis` | 不良原因分析 |
+| 不良物料、坏了什么 | `get_defect_material_analysis` | 不良物料分析 |
+| 责任归属、谁的责任 | `get_responsibility_analysis` | 责任归属分析 |
+| 处理状况、处理进度、状态 | `get_state_analysis` | 处理状况分析 |
+
+**单维度输出时，标题不要带编号**（如直接写"处理状况分析"，不要写"七、处理状况分析"）。编号仅在全量报告中使用。
 
 ## 执行流程
 
