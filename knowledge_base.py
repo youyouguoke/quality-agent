@@ -141,29 +141,60 @@ def search_knowledge(query: str) -> list[dict]:
 
 # ======================== 构建知识 Prompt ========================
 
+# 用户问题与基线段落的匹配关系
+_BASELINE_SECTION_KEYWORDS = {
+    "SKU 退货率基线": ["退货", "退货率", "客退", "sku", "产品", "净化器", "加湿器", "扫地机"],
+    "供应商 IQC 基线": ["供应商", "iqc", "来料", "进料", "合格率", "抽检"],
+    "代工厂质量基线": ["代工厂", "工厂", "直通率", "oqc", "不良率"],
+    "客退分析预警规则": ["预警", "告警", "异常", "环比", "集中", "复测", "积压"],
+    "趋势判断标准": ["趋势", "改善", "恶化", "波动", "稳定", "月度"],
+}
+
+
 def build_knowledge_prompt(query: str) -> str:
     """
-    根据用户问题构建知识上下文 prompt。
-    始终注入基线标准（核心），按需注入相关术语和案例。
+    根据用户问题按需加载相关知识片段，避免注入完整文件占用过多上下文。
     """
     parts = []
+    q = query.lower()
 
-    # 始终注入基线标准（是分析的判断依据）
+    # 按需加载基线标准的相关段落（不再注入完整文件）
     baselines = get_baselines()
     if baselines:
-        parts.append("\n## 质量基线标准（分析时必须参考）\n")
-        parts.append(baselines)
+        # 按 ## 标题分段
+        sections = re.split(r"(?=^## )", baselines, flags=re.MULTILINE)
+        matched_sections = []
 
-    # 检索与问题相关的知识片段
+        for section in sections:
+            if not section.strip():
+                continue
+            title_match = re.match(r"^##\s+(.+)", section)
+            if not title_match:
+                continue
+            title = title_match.group(1).strip()
+
+            # 检查该段落是否与用户问题相关
+            keywords = _BASELINE_SECTION_KEYWORDS.get(title, [])
+            if any(kw in q for kw in keywords):
+                matched_sections.append(section.strip())
+
+        if matched_sections:
+            parts.append("\n## 质量基线标准（与本次问题相关的部分）\n")
+            for s in matched_sections:
+                parts.append(s)
+                parts.append("")
+
+    # 按需检索其他知识片段（术语、案例）
     related = search_knowledge(query)
     if related:
-        parts.append("\n## 相关领域知识\n")
-        for item in related:
-            if item["source"] == "质量基线标准":
-                continue  # 已经完整注入，跳过
-            parts.append(f"**来源: {item['source']} - {item['section']}**")
-            parts.append(item["content"])
-            parts.append("")
+        # 过滤掉基线标准（已单独处理），只保留术语和案例
+        other_items = [item for item in related if item["source"] != "质量基线标准"]
+        if other_items:
+            parts.append("\n## 相关领域知识\n")
+            for item in other_items[:3]:  # 最多3条，控制长度
+                parts.append(f"**来源: {item['source']} - {item['section']}**")
+                parts.append(item["content"])
+                parts.append("")
 
     if not parts:
         return ""
