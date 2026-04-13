@@ -7,6 +7,7 @@
 """
 import json
 import logging
+import os
 import re
 import uuid
 from typing import Any, Optional
@@ -112,43 +113,97 @@ BASE_SYSTEM_PROMPT = """你是质量管理AI Agent，擅长分析质量数据资
 {data_context}
 """
 
-# 反思 prompt：分析完成后让 LLM 评估是否需要改进 Skill
-REFLECTION_PROMPT = """请回顾本次分析过程，思考以下问题并以 JSON 格式回答：
-1. 本次分析中是否有新发现的领域知识或判断标准？（如某个指标的正常范围、某类问题的常见原因等）
-2. 分析流程是否有可以优化的地方？（如某个步骤多余、或者缺少某个步骤）
-3. 是否发现了值得记录的分析案例？（如某个产品/供应商出现了特殊情况）
+# 反思 prompt：分析完成后让 LLM 评估执行质量并改进
+REFLECTION_PROMPT = """请回顾本次分析的完整过程（包括工具调用和返回结果），逐项检查以下问题并以 JSON 格式回答：
 
-请严格按以下 JSON 格式回答（如果没有改进建议，should_update 设为 false）：
+1. **执行问题**：本次分析过程中是否有工具调用失败、返回空数据、参数匹配失败等问题？（如用户说"5pro"但SKU没匹配到，或MCP返回了空结果）
+2. **知识发现**：是否有新发现的领域知识或判断标准值得记录？
+3. **流程优化**：分析流程是否有可以优化的地方？
+4. **案例沉淀**：是否发现了值得记录的分析案例？
+
+请严格按以下 JSON 格式回答：
 ```json
 {
     "should_update": true/false,
-    "skill_name": "技能名称（如果需要更新技能）",
-    "new_knowledge": "新发现的知识（追加到技能的知识段落，如果没有则为空字符串）",
-    "improvement_note": "改进说明（简要描述改了什么）",
+    "skill_name": "技能名称（如果需要更新技能，如'客退多维度分析报告'）",
+    "update_section": "要更新的段落（知识/流程）",
+    "new_content": "要追加的新内容",
+    "improvement_note": "改进说明",
+    "agents_md_update": {
+        "should_update": true/false,
+        "section": "要更新的段落标题（如'SKU 名称映射'）",
+        "new_content": "要追加的内容（如新的SKU简称映射行）"
+    },
     "new_case": {
         "should_save": true/false,
-        "title": "案例标题（如果需要保存新案例）",
-        "content": "案例内容（包含现象、根因、经验等，Markdown格式）"
-    }
+        "title": "案例标题",
+        "content": "案例内容（Markdown格式）"
+    },
+    "execution_issues": ["问题1描述", "问题2描述"]
 }
 ```
-只返回 JSON，不要其他内容。"""
+如果没有任何改进建议，所有 should_update/should_save 设为 false。只返回 JSON。"""
 
 
 # ======================== 核心执行逻辑 ========================
 
 MAX_TOOL_ROUNDS = 5  # 减少最大轮数，加快响应
 
+# AGENTS.md 文件路径
+_AGENTS_MD_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "AGENTS.md")
+
+
+def _try_update_agents_md(section: str, new_content: str):
+    """尝试在 AGENTS.md 的指定段落末尾追加内容"""
+    if not section or not new_content:
+        return
+
+    try:
+        with open(_AGENTS_MD_PATH, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        # 找到 ## section 段落的末尾（下一个 ## 之前）
+        section_header = f"## {section}"
+        if section_header not in content:
+            logger.warning("AGENTS.md 中未找到段落: %s", section)
+            return
+
+        lines = content.split("\n")
+        new_lines = []
+        in_target = False
+        inserted = False
+
+        for i, line in enumerate(lines):
+            if line.strip().startswith("## "):
+                if in_target and not inserted:
+                    # 在目标段落结束前插入新内容
+                    new_lines.append(new_content)
+                    new_lines.append("")
+                    inserted = True
+                in_target = line.strip() == section_header
+
+            new_lines.append(line)
+
+        # 如果目标段落是最后一个段落
+        if in_target and not inserted:
+            new_lines.append(new_content)
+
+        with open(_AGENTS_MD_PATH, "w", encoding="utf-8") as f:
+            f.write("\n".join(new_lines))
+
+        logger.info("AGENTS.md [%s] 段落已自动更新", section)
+
+    except Exception as e:
+        logger.error("更新 AGENTS.md 失败: %s", e)
+
 
 def _try_reflect_and_update(client: OpenAI, messages: list[dict], matched_skills: list[dict],
                             query: str = "", user: str = None):
     """
-    反思步骤：分析完成后让 LLM 评估是否需要改进 Skill。
-    异步执行，不影响主流程返回速度。失败时静默忽略。
+    反思步骤：分析完成后让 LLM 评估执行质量，自动改进 Skill 和 AGENTS.md。
+    失败时静默忽略，不影响主流程。
     """
-    if not matched_skills:
-        return
-
+    # ---- 1. Skill/AGENTS.md 反思 ----
     try:
         reflect_messages = messages.copy()
         reflect_messages.append({"role": "user", "content": REFLECTION_PROMPT})
@@ -157,68 +212,67 @@ def _try_reflect_and_update(client: OpenAI, messages: list[dict], matched_skills
             model=LLM_CONFIG["model"],
             messages=reflect_messages,
             temperature=0.3,
-            max_tokens=500,
+            max_tokens=800,
         )
         reflect_text = response.choices[0].message.content or ""
 
-        # 提取 JSON
         json_match = re.search(r"\{[\s\S]*\}", reflect_text)
         if not json_match:
-            return
+            logger.debug("反思未返回有效 JSON")
+        else:
+            reflection = json.loads(json_match.group())
 
-        reflection = json.loads(json_match.group())
-        if not reflection.get("should_update"):
-            # 即使 skill 不需要更新，也检查是否有新案例需要沉淀
+            # 记录执行问题
+            issues = reflection.get("execution_issues", [])
+            if issues:
+                logger.info("反思发现执行问题: %s", issues)
+
+            # 更新 Skill
+            if reflection.get("should_update") and matched_skills:
+                skill_name = reflection.get("skill_name", "")
+                update_section = reflection.get("update_section", "知识")
+                new_content = reflection.get("new_content", "")
+                improvement_note = reflection.get("improvement_note", "")
+
+                if skill_name and new_content:
+                    from skill_manager import append_improvement_log, update_skill
+
+                    target_skill = None
+                    for s in matched_skills:
+                        if s["name"] == skill_name:
+                            target_skill = s
+                            break
+
+                    if target_skill:
+                        current = target_skill.get(update_section.lower(), target_skill.get("knowledge", ""))
+                        updated = current.rstrip() + "\n" + new_content
+                        update_skill(skill_name, update_section, updated)
+
+                        old_version = target_skill.get("version", "1.0")
+                        parts = old_version.split(".")
+                        new_version = f"{parts[0]}.{int(parts[-1]) + 1}"
+                        append_improvement_log(skill_name, new_version, improvement_note)
+                        logger.info("Skill [%s] 已自动更新至 v%s: %s", skill_name, new_version, improvement_note)
+
+            # 更新 AGENTS.md
+            agents_update = reflection.get("agents_md_update", {})
+            if agents_update.get("should_update"):
+                _try_update_agents_md(
+                    agents_update.get("section", ""),
+                    agents_update.get("new_content", ""),
+                )
+
+            # 沉淀案例
             new_case = reflection.get("new_case", {})
             if new_case.get("should_save") and new_case.get("title") and new_case.get("content"):
                 from knowledge_base import save_case
                 save_case(new_case["title"], new_case["content"])
                 logger.info("已沉淀新分析案例: %s", new_case["title"])
-            return
-
-        skill_name = reflection.get("skill_name", "")
-        new_knowledge = reflection.get("new_knowledge", "")
-        improvement_note = reflection.get("improvement_note", "")
-
-        if not skill_name or not new_knowledge:
-            return
-
-        # 找到对应 Skill 并更新
-        from skill_manager import append_improvement_log, update_skill
-
-        target_skill = None
-        for s in matched_skills:
-            if s["name"] == skill_name:
-                target_skill = s
-                break
-
-        if target_skill is None:
-            return
-
-        # 追加新知识到现有知识末尾
-        current_knowledge = target_skill.get("knowledge", "")
-        updated_knowledge = current_knowledge.rstrip() + "\n" + new_knowledge
-        update_skill(skill_name, "知识", updated_knowledge)
-
-        # 更新版本号和改进日志
-        old_version = target_skill.get("version", "1.0")
-        parts = old_version.split(".")
-        new_version = f"{parts[0]}.{int(parts[-1]) + 1}"
-        append_improvement_log(skill_name, new_version, improvement_note)
-
-        logger.info("Skill [%s] 已自动更新至 v%s: %s", skill_name, new_version, improvement_note)
-
-        # 同时检查是否有新案例需要沉淀
-        new_case = reflection.get("new_case", {})
-        if new_case.get("should_save") and new_case.get("title") and new_case.get("content"):
-            from knowledge_base import save_case
-            save_case(new_case["title"], new_case["content"])
-            logger.info("已沉淀新分析案例: %s", new_case["title"])
 
     except Exception as e:
-        logger.debug("反思更新 Skill 失败（不影响主流程）: %s", e)
+        logger.debug("反思更新失败（不影响主流程）: %s", e)
 
-    # ---- 记忆沉淀：提取本次分析结论保存到 memory ----
+    # ---- 2. 记忆沉淀 ----
     try:
         memory_messages = messages.copy()
         memory_messages.append({"role": "user", "content": MEMORY_EXTRACT_PROMPT})
