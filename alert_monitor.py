@@ -350,53 +350,27 @@ def _check_defect_concentration() -> list[dict]:
 
 
 def _check_supplier_iqc() -> list[dict]:
-    """规则3: 供应商月度 IQC 抽检不合格次数检测（最近一个月）"""
+    """规则3: 供应商 IQC 抽检不合格次数检测"""
     new_alerts = []
     try:
         from database import execute_query
 
-        # 取 supplier_quality_iqc_monthly 中最近一个月的月份
-        latest_sql = """
-            SELECT MAX(ic_month) AS latest_month
-            FROM supplier_quality_iqc_monthly
-        """
-        latest_row = execute_query(latest_sql)
-        if not latest_row or not latest_row[0].get("latest_month"):
-            return new_alerts
-        latest_month = latest_row[0]["latest_month"]
-
-        # 查该月所有供应商的数据
         sql = """
-            SELECT supplier_name,
-                   ic_month,
-                   iqc_batch_pass_rate,
-                   reject_rate
-            FROM supplier_quality_iqc_monthly
-            WHERE ic_month = %s
-        """
-        rows = execute_query(sql, (latest_month,))
-        if not rows:
-            return new_alerts
-
-        # 查 supplier_quality_iqc 获取进料/合格批次明细
-        iqc_sql = """
             SELECT supplier_name,
                    COALESCE(iqc_batch, 0) AS iqc_batch,
                    COALESCE(qualified_batch, 0) AS qualified_batch
             FROM supplier_quality_iqc
             WHERE iqc_batch IS NOT NULL
         """
-        iqc_rows = execute_query(iqc_sql)
-        iqc_map = {}
-        for r in (iqc_rows or []):
-            iqc_map[r["supplier_name"]] = r
+        rows = execute_query(sql)
+        if not rows:
+            return new_alerts
 
         for r in rows:
             supplier = r["supplier_name"]
-            iqc_info = iqc_map.get(supplier, {})
             try:
-                iqc_batch = int(iqc_info.get("iqc_batch", 0))
-                qualified_batch = int(iqc_info.get("qualified_batch", 0))
+                iqc_batch = int(r["iqc_batch"])
+                qualified_batch = int(r["qualified_batch"])
             except (ValueError, TypeError):
                 continue
 
@@ -404,21 +378,21 @@ def _check_supplier_iqc() -> list[dict]:
             if unqualified <= 0:
                 continue
 
-            if unqualified > 3:
+            if unqualified > 2:
                 new_alerts.append(_add_alert(
                     level="critical", rule="supplier_iqc_unqualified",
-                    title=f"供应商 {supplier} 月度IQC抽检不合格次数过多",
-                    detail=f"{latest_month} 月不合格 {unqualified} 次（进料{iqc_batch}批/合格{qualified_batch}批），超过严重阈值(>3次)",
-                    data={"supplier_name": supplier, "month": latest_month,
+                    title=f"供应商 {supplier} IQC抽检不合格次数过多",
+                    detail=f"不合格 {unqualified} 次（进料{iqc_batch}批/合格{qualified_batch}批），超过严重阈值(>2次)",
+                    data={"supplier_name": supplier, "month": "-",
                           "iqc_batch": iqc_batch, "qualified_batch": qualified_batch,
                           "unqualified": unqualified},
                 ))
-            elif unqualified > 2:
+            elif unqualified > 1:
                 new_alerts.append(_add_alert(
                     level="warning", rule="supplier_iqc_unqualified",
-                    title=f"供应商 {supplier} 月度IQC抽检不合格次数偏多",
-                    detail=f"{latest_month} 月不合格 {unqualified} 次（进料{iqc_batch}批/合格{qualified_batch}批），超过预警阈值(>2次)",
-                    data={"supplier_name": supplier, "month": latest_month,
+                    title=f"供应商 {supplier} IQC抽检不合格次数偏多",
+                    detail=f"不合格 {unqualified} 次（进料{iqc_batch}批/合格{qualified_batch}批），超过预警阈值(>1次)",
+                    data={"supplier_name": supplier, "month": "-",
                           "iqc_batch": iqc_batch, "qualified_batch": qualified_batch,
                           "unqualified": unqualified},
                 ))
