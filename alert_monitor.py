@@ -420,7 +420,7 @@ def _check_supplier_iqc() -> list[dict]:
 
 
 def _check_retest_backlog() -> list[dict]:
-    """规则4: SKU 复测完成率检测"""
+    """规则4: SKU 复测完成率检测（全量数据）"""
     new_alerts = []
     try:
         from database import execute_query
@@ -430,7 +430,6 @@ def _check_retest_backlog() -> list[dict]:
                    COUNT(*) AS total,
                    SUM(CASE WHEN retest_result IS NOT NULL AND retest_result != '' THEN 1 ELSE 0 END) AS retested
             FROM return_data
-            WHERE return_time >= DATE_SUB(CURDATE(), INTERVAL 2 MONTH)
             GROUP BY sku_name
             HAVING total >= 10
         """
