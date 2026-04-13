@@ -15,6 +15,11 @@ from openai import OpenAI
 
 from config import LLM_CONFIG, TABLE_SCHEMAS, UNAVAILABLE_TABLES
 from knowledge_base import build_knowledge_prompt
+from memory_store import (
+    MEMORY_EXTRACT_PROMPT,
+    build_memory_prompt,
+    save_memory_from_reflection,
+)
 from models import AgentStep, ChatMessage, ToolCallRecord
 from skill_manager import build_skill_prompt, match_skills
 from tools import OPENAI_TOOLS_SCHEMA, execute_tool
@@ -135,7 +140,8 @@ REFLECTION_PROMPT = """请回顾本次分析过程，思考以下问题并以 JS
 MAX_TOOL_ROUNDS = 5  # 减少最大轮数，加快响应
 
 
-def _try_reflect_and_update(client: OpenAI, messages: list[dict], matched_skills: list[dict]):
+def _try_reflect_and_update(client: OpenAI, messages: list[dict], matched_skills: list[dict],
+                            query: str = "", user: str = None):
     """
     反思步骤：分析完成后让 LLM 评估是否需要改进 Skill。
     异步执行，不影响主流程返回速度。失败时静默忽略。
@@ -212,6 +218,26 @@ def _try_reflect_and_update(client: OpenAI, messages: list[dict], matched_skills
     except Exception as e:
         logger.debug("反思更新 Skill 失败（不影响主流程）: %s", e)
 
+    # ---- 记忆沉淀：提取本次分析结论保存到 memory ----
+    try:
+        memory_messages = messages.copy()
+        memory_messages.append({"role": "user", "content": MEMORY_EXTRACT_PROMPT})
+
+        mem_response = client.chat.completions.create(
+            model=LLM_CONFIG["model"],
+            messages=memory_messages,
+            temperature=0.3,
+            max_tokens=500,
+        )
+        mem_text = mem_response.choices[0].message.content or ""
+        mem_match = re.search(r"\{[\s\S]*\}", mem_text)
+        if mem_match:
+            mem_json = json.loads(mem_match.group())
+            if save_memory_from_reflection(mem_json, query=query, user=user):
+                logger.info("已沉淀分析记忆: %s/%s", mem_json.get("category"), mem_json.get("subject"))
+    except Exception as e:
+        logger.debug("记忆沉淀失败（不影响主流程）: %s", e)
+
 
 def run_master_agent(
     query: str,
@@ -258,6 +284,11 @@ def run_master_agent(
     if knowledge_prompt:
         system_prompt += "\n" + knowledge_prompt
 
+    # 注入历史分析记忆（闭环跟踪：对比上次分析结论）
+    memory_prompt = build_memory_prompt(query)
+    if memory_prompt:
+        system_prompt += "\n" + memory_prompt
+
     # 注入匹配的 Skill
     if skill_prompt:
         system_prompt += "\n" + skill_prompt
@@ -293,7 +324,8 @@ def run_master_agent(
             save_to_session(session_id, "assistant", answer)
 
             # 反思：分析是否有可以改进 Skill 的地方
-            _try_reflect_and_update(client, messages + [{"role": "assistant", "content": answer}], matched_skills)
+            _try_reflect_and_update(client, messages + [{"role": "assistant", "content": answer}], matched_skills,
+                                   query=query, user=user)
 
             return {
                 "answer": answer,
@@ -350,7 +382,8 @@ def run_master_agent(
     save_to_session(session_id, "assistant", answer)
 
     # 反思：分析是否有可以改进 Skill 的地方
-    _try_reflect_and_update(client, messages + [{"role": "assistant", "content": answer}], matched_skills)
+    _try_reflect_and_update(client, messages + [{"role": "assistant", "content": answer}], matched_skills,
+                           query=query, user=user)
 
     return {
         "answer": answer,

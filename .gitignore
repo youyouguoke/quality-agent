@@ -32,6 +32,9 @@ verify_*.py
 # 运行时生成的用户画像数据（保留 .gitkeep）
 user_profiles/*.json
 
+# 运行时生成的分析记忆数据（保留 .gitkeep）
+memory/**/*.jsonl
+
 # OS
 Thumbs.db
 .DS_Store

@@ -33,6 +33,8 @@ services:
       - /home/agentdata/quality-agent/knowledge:/app/knowledge
       # 用户画像持久化
       - /home/agentdata/quality-agent/user_profiles:/app/user_profiles
+      # 分析记忆持久化 - 闭环跟踪
+      - /home/agentdata/quality-agent/memory:/app/memory
     networks:
       - quality-net
     healthcheck:
