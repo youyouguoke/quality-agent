@@ -51,7 +51,7 @@ def get_llm_client() -> OpenAI:
         _client = OpenAI(
             api_key=LLM_CONFIG["api_key"],
             base_url=LLM_CONFIG["base_url"],
-            timeout=120,
+            timeout=300,
         )
     return _client
 
@@ -480,9 +480,9 @@ def run_master_agent(
             logger.info("调用工具: %s(%s)", func_name, func_args)
             result = execute_tool(func_name, func_args, user=user)
 
-            # 截断过长结果
-            if len(result) > 6000:
-                result = result[:6000] + "\n...(数据已截断)"
+            # 截断过长结果（减少上下文积累，避免后续轮次LLM超时）
+            if len(result) > 4000:
+                result = result[:4000] + "\n...(数据已截断，如需完整数据请缩小查询范围)"
 
             tool_records.append(ToolCallRecord(
                 tool_name=func_name,
