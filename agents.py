@@ -22,7 +22,12 @@ from memory_store import (
     save_memory_from_reflection,
 )
 from models import AgentStep, ChatMessage, ToolCallRecord
-from skill_manager import build_skill_prompt, match_skills
+from skill_manager import (
+    build_skill_prompt,
+    evaluate_and_maybe_rollback,
+    match_skills,
+    record_skill_usage,
+)
 from tools import OPENAI_TOOLS_SCHEMA, execute_tool
 from user_profile import (
     build_user_prompt,
@@ -52,6 +57,7 @@ def get_llm_client() -> OpenAI:
 # ======================== 会话管理 ========================
 
 _sessions: dict[str, list[dict]] = {}
+_session_last_skills: dict[str, list[str]] = {}  # session_id -> 上次使用的 Skill 名称列表
 MAX_HISTORY = 20
 
 
@@ -70,6 +76,34 @@ def save_to_session(session_id: str, role: str, content: str):
 
 def clear_session(session_id: str):
     _sessions.pop(session_id, None)
+    _session_last_skills.pop(session_id, None)
+
+
+def _detect_followup(session_id: str, query: str) -> bool:
+    """
+    检测当前问题是否是对上一轮分析的追问。
+    追问特征：同一 session 连续提问，且问题涉及上次的分析主题。
+    """
+    history = get_session(session_id)
+    if len(history) < 2:
+        return False
+
+    q = query.lower()
+    # 追问关键词
+    followup_keywords = [
+        "再详细", "展开", "具体说", "为什么", "解释一下", "不对", "错了",
+        "再看看", "再分析", "换个角度", "还有呢", "其他呢", "补充",
+        "刚才", "上面", "上次", "这个", "那个",
+    ]
+    return any(kw in q for kw in followup_keywords)
+
+
+def _record_skill_success(session_id: str, matched_skills: list[dict]):
+    """记录本轮 Skill 使用成功，并保存到 session 用于下轮追问检测"""
+    skill_names = [s["name"] for s in matched_skills]
+    _session_last_skills[session_id] = skill_names
+    for s in matched_skills:
+        record_skill_usage(s["name"], "success", version=s.get("version"))
 
 
 # ======================== 构建数据资产上下文 ========================
@@ -330,6 +364,17 @@ def run_master_agent(
             logger.info("自动识别用户画像 [%s]: %s", user, detected)
         record_interaction(user, query)
 
+    # 检测追问：如果是追问，给上一轮使用的 Skill 记录 followup
+    is_followup = _detect_followup(session_id, query)
+    if is_followup:
+        last_skills = _session_last_skills.get(session_id, [])
+        for sname in last_skills:
+            record_skill_usage(sname, "followup")
+            # 检查是否需要回退
+            rollback_ver = evaluate_and_maybe_rollback(sname)
+            if rollback_ver:
+                logger.warning("Skill [%s] 因评分过低已自动回退到 %s", sname, rollback_ver)
+
     # 匹配相关 Skill
     matched_skills = match_skills(query)
     skill_prompt = build_skill_prompt(matched_skills)
@@ -388,6 +433,9 @@ def run_master_agent(
             save_to_session(session_id, "user", query)
             save_to_session(session_id, "assistant", answer)
 
+            # 记录 Skill 使用成功（非追问场景下本轮的 Skill）
+            _record_skill_success(session_id, matched_skills)
+
             # 反思：根据分析深度决定反思级别
             _try_reflect_and_update(client, messages + [{"role": "assistant", "content": answer}], matched_skills,
                                    query=query, user=user, tool_call_count=len(tool_records))
@@ -445,6 +493,9 @@ def run_master_agent(
     answer = response.choices[0].message.content or ""
     save_to_session(session_id, "user", query)
     save_to_session(session_id, "assistant", answer)
+
+    # 记录 Skill 使用成功
+    _record_skill_success(session_id, matched_skills)
 
     # 反思：根据分析深度决定反思级别
     _try_reflect_and_update(client, messages + [{"role": "assistant", "content": answer}], matched_skills,

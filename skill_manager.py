@@ -1,6 +1,6 @@
 """
 质量管理 AI Agent 系统 - Skill 管理器
-负责 Skill 的加载、解析、匹配和自动更新。
+负责 Skill 的加载、解析、匹配、自动更新、效果评估和版本回退。
 
 Skill 以 Markdown 文件存储在 skills/ 目录中，每个文件是一个独立技能。
 Markdown 格式约定：
@@ -11,11 +11,16 @@ Markdown 格式约定：
   ## 流程          → 执行步骤
   ## 输出格式       → 报告结构要求
   ## 改进日志       → 版本历史
+
+效果评估文件：skills/_metrics/{skill_name}.json
+版本备份目录：skills/_backups/{skill_name}/v{version}.md
 """
+import json
 import logging
 import os
 import re
-from datetime import date
+import shutil
+from datetime import date, datetime
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -227,12 +232,7 @@ def build_skill_prompt(matched_skills: list[dict]) -> str:
 
 def update_skill(skill_name: str, section: str, new_content: str) -> bool:
     """
-    更新指定 Skill 的某个段落内容。
-
-    Args:
-        skill_name: Skill 名称
-        section: 要更新的段落标题（如 "知识"、"流程"、"改进日志"）
-        new_content: 新内容
+    更新指定 Skill 的某个段落内容。更新前自动备份当前版本。
     """
     skills = load_all_skills()
     target = None
@@ -244,6 +244,10 @@ def update_skill(skill_name: str, section: str, new_content: str) -> bool:
     if target is None:
         logger.warning("未找到 Skill: %s", skill_name)
         return False
+
+    # 更新前备份当前版本
+    current_version = target.get("version", "1.0")
+    _backup_skill(skill_name, current_version)
 
     filepath = target["filepath"]
     try:
@@ -345,3 +349,257 @@ def append_improvement_log(skill_name: str, version: str, note: str) -> bool:
         return True
     except Exception:
         return False
+
+
+# ======================== 版本备份与回退 ========================
+
+BACKUPS_DIR = os.path.join(SKILLS_DIR, "_backups")
+
+
+def _backup_skill(skill_name: str, version: str) -> bool:
+    """备份当前版本的 Skill 文件"""
+    skills = load_all_skills()
+    target = None
+    for s in skills:
+        if s["name"] == skill_name:
+            target = s
+            break
+    if not target:
+        return False
+
+    backup_dir = os.path.join(BACKUPS_DIR, _safe_name(skill_name))
+    os.makedirs(backup_dir, exist_ok=True)
+
+    backup_path = os.path.join(backup_dir, f"v{version}.md")
+    try:
+        shutil.copy2(target["filepath"], backup_path)
+        logger.info("已备份 Skill [%s] v%s -> %s", skill_name, version, backup_path)
+        return True
+    except Exception as e:
+        logger.error("备份 Skill 失败: %s", e)
+        return False
+
+
+def _safe_name(name: str) -> str:
+    """文件名安全化"""
+    return re.sub(r'[\\/:*?"<>|]', '_', name).strip()
+
+
+def list_backups(skill_name: str) -> list[str]:
+    """列出某个 Skill 的所有备份版本"""
+    backup_dir = os.path.join(BACKUPS_DIR, _safe_name(skill_name))
+    if not os.path.isdir(backup_dir):
+        return []
+    versions = []
+    for f in sorted(os.listdir(backup_dir)):
+        if f.endswith(".md") and f.startswith("v"):
+            versions.append(f.replace(".md", ""))
+    return versions
+
+
+def rollback_skill(skill_name: str, target_version: str = None) -> bool:
+    """
+    回退 Skill 到指定版本。不指定版本时回退到上一个备份。
+
+    Args:
+        skill_name: Skill 名称
+        target_version: 目标版本号（如 "v1.0"），不传则回退到最近的备份
+    """
+    skills = load_all_skills()
+    target_skill = None
+    for s in skills:
+        if s["name"] == skill_name:
+            target_skill = s
+            break
+    if not target_skill:
+        logger.warning("回退失败：未找到 Skill [%s]", skill_name)
+        return False
+
+    backups = list_backups(skill_name)
+    if not backups:
+        logger.warning("回退失败：Skill [%s] 没有备份", skill_name)
+        return False
+
+    if target_version:
+        if target_version not in backups:
+            logger.warning("回退失败：Skill [%s] 没有版本 %s 的备份", skill_name, target_version)
+            return False
+        version = target_version
+    else:
+        # 回退到倒数第二个版本（最后一个是当前版本的备份）
+        version = backups[-2] if len(backups) >= 2 else backups[-1]
+
+    backup_path = os.path.join(BACKUPS_DIR, _safe_name(skill_name), f"{version}.md")
+    try:
+        shutil.copy2(backup_path, target_skill["filepath"])
+        load_all_skills(force_reload=True)
+        logger.info("已回退 Skill [%s] 到 %s", skill_name, version)
+        return True
+    except Exception as e:
+        logger.error("回退 Skill 失败: %s", e)
+        return False
+
+
+# ======================== Skill 效果评估 ========================
+
+METRICS_DIR = os.path.join(SKILLS_DIR, "_metrics")
+
+
+def _get_metrics_path(skill_name: str) -> str:
+    os.makedirs(METRICS_DIR, exist_ok=True)
+    return os.path.join(METRICS_DIR, f"{_safe_name(skill_name)}.json")
+
+
+def _load_metrics(skill_name: str) -> dict:
+    """加载 Skill 的效果指标"""
+    path = _get_metrics_path(skill_name)
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {
+        "skill_name": skill_name,
+        "total_uses": 0,
+        "followup_count": 0,       # 用户追问次数（说明分析不够深入）
+        "correction_count": 0,     # 用户纠正次数（说明分析有误）
+        "success_count": 0,        # 正常完成次数
+        "score": 100.0,            # 效果评分（满分100，低于60需回退）
+        "version_scores": {},      # 各版本的评分 {"1.0": 95, "1.1": 80}
+        "last_used": None,
+        "last_evaluated": None,
+    }
+
+
+def _save_metrics(skill_name: str, metrics: dict):
+    """保存 Skill 效果指标"""
+    path = _get_metrics_path(skill_name)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(metrics, f, ensure_ascii=False, indent=2, default=str)
+    except Exception as e:
+        logger.error("保存 Skill 指标失败 [%s]: %s", skill_name, e)
+
+
+def record_skill_usage(skill_name: str, outcome: str, version: str = None):
+    """
+    记录一次 Skill 使用结果。
+
+    Args:
+        skill_name: Skill 名称
+        outcome: 使用结果
+            - "success": 正常完成，用户未追问
+            - "followup": 用户追问了（可能分析不够深入）
+            - "correction": 用户纠正了（分析有误）
+        version: 当前 Skill 版本
+    """
+    metrics = _load_metrics(skill_name)
+    metrics["total_uses"] += 1
+    metrics["last_used"] = datetime.now().isoformat()
+
+    if outcome == "success":
+        metrics["success_count"] += 1
+    elif outcome == "followup":
+        metrics["followup_count"] += 1
+    elif outcome == "correction":
+        metrics["correction_count"] += 1
+
+    # 重新计算评分
+    total = metrics["total_uses"]
+    if total > 0:
+        success_rate = metrics["success_count"] / total
+        followup_penalty = metrics["followup_count"] / total * 20  # 追问扣分
+        correction_penalty = metrics["correction_count"] / total * 40  # 纠正扣分更重
+        metrics["score"] = round(max(0, min(100, success_rate * 100 - followup_penalty - correction_penalty)), 1)
+
+    # 记录版本评分
+    if version:
+        metrics["version_scores"][version] = metrics["score"]
+
+    metrics["last_evaluated"] = datetime.now().isoformat()
+    _save_metrics(skill_name, metrics)
+
+    logger.info("Skill [%s] 使用记录: %s (评分: %.1f, 总使用: %d)",
+                skill_name, outcome, metrics["score"], total)
+
+    return metrics
+
+
+def evaluate_and_maybe_rollback(skill_name: str) -> Optional[str]:
+    """
+    评估 Skill 效果，如果评分过低则自动回退到上一个高分版本。
+
+    Returns:
+        回退到的版本号，未回退返回 None
+    """
+    metrics = _load_metrics(skill_name)
+
+    # 至少使用5次才评估（样本太少不可靠）
+    if metrics["total_uses"] < 5:
+        return None
+
+    current_score = metrics["score"]
+
+    # 评分低于60分触发回退
+    if current_score >= 60:
+        return None
+
+    logger.warning("Skill [%s] 评分 %.1f 低于60分，尝试回退", skill_name, current_score)
+
+    # 找到评分最高的历史版本
+    version_scores = metrics.get("version_scores", {})
+    if not version_scores:
+        return None
+
+    # 排除当前版本，找历史最高分
+    skills = load_all_skills()
+    current_version = None
+    for s in skills:
+        if s["name"] == skill_name:
+            current_version = s.get("version", "1.0")
+            break
+
+    best_version = None
+    best_score = 0
+    for ver, score in version_scores.items():
+        if ver != current_version and score > best_score:
+            best_score = score
+            best_version = ver
+
+    if best_version and best_score > current_score:
+        # 先备份当前版本
+        if current_version:
+            _backup_skill(skill_name, current_version)
+
+        # 回退
+        if rollback_skill(skill_name, f"v{best_version}"):
+            logger.info("Skill [%s] 已自动回退: v%s (%.1f分) -> v%s (%.1f分)",
+                        skill_name, current_version, current_score, best_version, best_score)
+
+            # 重置评估计数（给回退版本重新评估的机会）
+            metrics["total_uses"] = 0
+            metrics["success_count"] = 0
+            metrics["followup_count"] = 0
+            metrics["correction_count"] = 0
+            metrics["score"] = best_score
+            _save_metrics(skill_name, metrics)
+
+            return best_version
+
+    return None
+
+
+def get_all_skill_metrics() -> list[dict]:
+    """获取所有 Skill 的效果指标"""
+    if not os.path.isdir(METRICS_DIR):
+        return []
+    result = []
+    for f in os.listdir(METRICS_DIR):
+        if f.endswith(".json"):
+            try:
+                with open(os.path.join(METRICS_DIR, f), "r", encoding="utf-8") as fp:
+                    result.append(json.load(fp))
+            except Exception:
+                continue
+    return sorted(result, key=lambda m: m.get("score", 0))
