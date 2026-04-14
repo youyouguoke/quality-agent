@@ -39,7 +39,7 @@ MCP_CONFIG = {
     "url": os.getenv("MCP_URL", "https://dm.zhimi.com/mcp"),
     "auth_token": os.getenv("MCP_AUTH_TOKEN", "642E94F7-AC16-4565-ABA7-A8F7F80099A8"),
     "user": os.getenv("MCP_USER", "zhangzhiguang3"),
-    "timeout": int(os.getenv("MCP_TIMEOUT", 60)),
+    "timeout": int(os.getenv("MCP_TIMEOUT", 120)),
 }
 
 # ======================== 预警监控配置 ========================

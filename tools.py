@@ -578,7 +578,7 @@ def tool_search_knowledge(query: str) -> str:
 # ======================== 根因推理链工具 ========================
 
 def tool_root_cause_analysis(sku_name: str = None, defect_material: str = None,
-                             defect_cause: str = None, limit: int = 0) -> str:
+                             defect_cause: str = None, limit: int = 500) -> str:
     """
     根因推理链分析：跨表关联客退数据、SN物料、供应商质量，构建完整证据链。
 
@@ -665,8 +665,8 @@ def tool_root_cause_analysis(sku_name: str = None, defect_material: str = None,
                 {"batch": b, "count": c} for b, c in top_batches
             ]
 
-        # ====== 3. 追溯SN关键物料（抽样前10个SN） ======
-        sample_sns = sn_list[:10]
+        # ====== 3. 追溯SN关键物料（抽样前5个SN，减少查询次数） ======
+        sample_sns = sn_list[:5]
         if sample_sns:
             sn_materials = []
             for sn in sample_sns:
@@ -1280,7 +1280,7 @@ OPENAI_TOOLS_SCHEMA = [
                     "sku_name": {"type": "string", "description": "按SKU名称过滤（可选），如'米家空气净化器 4 Lite'"},
                     "defect_material": {"type": "string", "description": "按不良物料名称过滤（可选），聚焦特定物料的根因追溯"},
                     "defect_cause": {"type": "string", "description": "按不良原因过滤（可选），聚焦特定故障类型的根因追溯"},
-                    "limit": {"type": "integer", "description": "返回行数上限，默认0表示不限制，返回全部数据"},
+                    "limit": {"type": "integer", "description": "最大查询行数，默认500。设为0表示不限制（慎用，可能超时）"},
                 },
                 "required": [],
             },
