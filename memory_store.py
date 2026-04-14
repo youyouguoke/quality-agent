@@ -263,33 +263,59 @@ def _detect_subject(query: str) -> Optional[str]:
 
 def retrieve_relevant_memories(query: str, limit: int = 5) -> list[dict]:
     """
-    根据用户问题智能检索相关记忆。
+    根据用户问题智能检索相关记忆，支持跨维度关联。
 
     检索策略：
-    1. 识别问题涉及的分类（sku/supplier/factory/root_cause）
-    2. 从问题中提取主题（SKU名/供应商名等）
-    3. 优先返回同主题的记忆，再补充同分类的其他记忆
+    1. 识别问题涉及的分类和主题
+    2. 加载同主题同分类的记忆（优先级最高）
+    3. 跨维度关联：扫描其他分类的记忆，找到 related_entities 中包含当前主题的记忆
+    4. 补充同分类其他主题的最新记忆
     """
     categories = _detect_category(query)
     subject = _detect_subject(query)
 
     memories = []
+    seen_ids = set()  # 去重用（time + subject 组合）
 
-    # 优先加载同主题的记忆
+    def _add_unique(mem_list: list[dict]):
+        for m in mem_list:
+            mid = f"{m.get('time', '')}_{m.get('subject', '')}"
+            if mid not in seen_ids:
+                seen_ids.add(mid)
+                memories.append(m)
+
+    # ---- 第1层：同主题同分类（最相关） ----
     if subject:
         for cat in categories:
-            mems = load_memories(cat, subject, limit=limit)
-            memories.extend(mems)
+            _add_unique(load_memories(cat, subject, limit=3))
 
-    # 如果同主题记忆不够，补充同分类下其他主题的最新记忆
+    # ---- 第2层：跨维度关联（核心新增） ----
+    if subject and len(memories) < limit:
+        # 扫描所有分类的所有记忆，找 related_entities 中包含当前主题的
+        all_categories = ["sku", "supplier", "factory", "root_cause", "general"]
+        for cat in all_categories:
+            if cat in categories and subject:
+                continue  # 已经在第1层查过了
+            cross_mems = load_all_memories_in_category(cat, limit_per_file=2)
+            for m in cross_mems:
+                if len(memories) >= limit:
+                    break
+                related = m.get("related_entities", {})
+                # 检查当前主题是否出现在任何关联实体列表中
+                all_related_names = []
+                for entity_list in related.values():
+                    if isinstance(entity_list, list):
+                        all_related_names.extend(entity_list)
+                if subject in all_related_names:
+                    _add_unique([m])
+
+    # ---- 第3层：同分类其他主题（补充） ----
     if len(memories) < limit:
         for cat in categories:
             all_mems = load_all_memories_in_category(cat, limit_per_file=2)
-            for m in all_mems:
-                if m not in memories:
-                    memories.append(m)
-                    if len(memories) >= limit:
-                        break
+            _add_unique(all_mems)
+            if len(memories) >= limit:
+                break
 
     return memories[:limit]
 
@@ -297,22 +323,39 @@ def retrieve_relevant_memories(query: str, limit: int = 5) -> list[dict]:
 # ======================== 构建记忆 Prompt ========================
 
 def build_memory_prompt(query: str) -> str:
-    """根据用户问题检索相关记忆，构建 prompt 片段"""
+    """根据用户问题检索相关记忆（含跨维度关联），构建 prompt 片段"""
     memories = retrieve_relevant_memories(query, limit=5)
     if not memories:
         return ""
 
-    parts = ["\n## 历史分析记忆（上次分析的结论，供参考对比）\n"]
+    subject = _detect_subject(query)
+    parts = ["\n## 历史分析记忆\n"]
 
     for i, mem in enumerate(memories, 1):
         time_str = mem.get("time", "未知")[:10]
-        subject = mem.get("subject", "")
+        mem_subject = mem.get("subject", "")
         mtype = mem.get("type", "")
         conclusion = mem.get("conclusion", "")
         findings = mem.get("key_findings", [])
         metrics = mem.get("metrics", {})
+        related = mem.get("related_entities", {})
 
-        parts.append(f"### 记忆{i}：{subject}（{time_str}，{mtype}）")
+        # 标注是同主题记忆还是跨维度关联
+        if subject and mem_subject == subject:
+            tag = "同主题"
+        elif subject and related:
+            all_related = []
+            for v in related.values():
+                if isinstance(v, list):
+                    all_related.extend(v)
+            if subject in all_related:
+                tag = "跨维度关联"
+            else:
+                tag = "同分类参考"
+        else:
+            tag = "参考"
+
+        parts.append(f"### 记忆{i}（{tag}）：{mem_subject}（{time_str}，{mtype}）")
         if conclusion:
             parts.append(f"**结论**：{conclusion}")
         if findings:
@@ -322,9 +365,18 @@ def build_memory_prompt(query: str) -> str:
         if metrics:
             metrics_str = "、".join(f"{k}: {v}" for k, v in metrics.items())
             parts.append(f"**指标**：{metrics_str}")
+        if related:
+            related_items = []
+            for entity_type, names in related.items():
+                if isinstance(names, list) and names:
+                    label = {"sku_names": "SKU", "supplier_names": "供应商",
+                             "material_names": "物料", "factory_names": "工厂"}.get(entity_type, entity_type)
+                    related_items.append(f"{label}: {', '.join(names)}")
+            if related_items:
+                parts.append(f"**关联实体**：{'；'.join(related_items)}")
         parts.append("")
 
-    parts.append("**请对比上次分析结论**：如果指标有变化，主动说明是改善还是恶化。\n")
+    parts.append("**请对比历史分析结论**：如果指标有变化，主动说明是改善还是恶化。跨维度关联的记忆可帮助发现不同维度之间的隐藏关系。\n")
     return "\n".join(parts)
 
 
@@ -342,14 +394,20 @@ MEMORY_EXTRACT_PROMPT = """请从本次分析中提取可持久化的结论摘�
     "conclusion": "一句话结论摘要",
     "key_findings": ["关键发现1", "关键发现2"],
     "recommendations": ["改善建议1"],
-    "metrics": {"关键指标名": "指标值"}
+    "metrics": {"关键指标名": "指标值"},
+    "related_entities": {
+        "sku_names": ["涉及的SKU名称列表"],
+        "supplier_names": ["涉及的供应商名称列表"],
+        "material_names": ["涉及的物料名称列表"],
+        "factory_names": ["涉及的工厂名称列表"]
+    }
 }
 ```
-只返回 JSON。"""
+只返回 JSON。related_entities 用于跨维度关联，请尽量填写本次分析涉及的所有实体名称。"""
 
 
 def save_memory_from_reflection(reflection_json: dict, query: str, user: str = None) -> bool:
-    """从 LLM 反思结果中提取并保存记忆"""
+    """从 LLM 反思结果中提取并保存记忆（含关联实体）"""
     if not reflection_json.get("should_save"):
         return False
 
@@ -365,6 +423,7 @@ def save_memory_from_reflection(reflection_json: dict, query: str, user: str = N
         "key_findings": reflection_json.get("key_findings", []),
         "recommendations": reflection_json.get("recommendations", []),
         "metrics": reflection_json.get("metrics", {}),
+        "related_entities": reflection_json.get("related_entities", {}),
         "user": user,
     }
 
