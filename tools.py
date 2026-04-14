@@ -578,7 +578,7 @@ def tool_search_knowledge(query: str) -> str:
 # ======================== 根因推理链工具 ========================
 
 def tool_root_cause_analysis(sku_name: str = None, defect_material: str = None,
-                             defect_cause: str = None, limit: int = 500) -> str:
+                             defect_cause: str = None, limit: int = 0) -> str:
     """
     根因推理链分析：跨表关联客退数据、SN物料、供应商质量，构建完整证据链。
 
@@ -665,21 +665,20 @@ def tool_root_cause_analysis(sku_name: str = None, defect_material: str = None,
                 {"batch": b, "count": c} for b, c in top_batches
             ]
 
-        # ====== 3. 追溯SN关键物料（抽样前5个SN，减少查询次数） ======
-        sample_sns = sn_list[:5]
+        # ====== 3. 追溯SN关键物料（批量查询，避免逐个SN串行查询导致超时） ======
+        sample_sns = sn_list[:20]
         if sample_sns:
-            sn_materials = []
-            for sn in sample_sns:
-                try:
-                    mats = query_table("sn_quality_key_material", where={"sn_no": sn})
-                    for m in _serialize_rows(mats):
-                        m["from_sn"] = sn
-                        sn_materials.append(m)
-                except Exception:
-                    pass
-            result["sn_key_materials_sample"] = sn_materials[:50]
+            try:
+                from database import execute_query as _exec
+                placeholders = ",".join(["%s"] * len(sample_sns))
+                mat_sql = f"SELECT * FROM sn_quality_key_material WHERE sn_no IN ({placeholders})"
+                sn_materials_raw = _exec(mat_sql, tuple(sample_sns))
+                sn_materials = _serialize_rows(sn_materials_raw) if sn_materials_raw else []
+                result["sn_key_materials_sample"] = sn_materials[:50]
+            except Exception:
+                result["sn_key_materials_sample"] = []
 
-        # ====== 4. 查询嫌疑供应商的IQC质量 ======
+        # ====== 4. 查询嫌疑供应商的IQC质量（批量查询） ======
         suspect_suppliers = set()
         for item in material_supplier_analysis[:5]:
             sup = item.get("supplier")
@@ -687,27 +686,40 @@ def tool_root_cause_analysis(sku_name: str = None, defect_material: str = None,
                 suspect_suppliers.add(sup)
 
         supplier_quality = {}
-        for sup in suspect_suppliers:
+        if suspect_suppliers:
             try:
-                iqc = query_table("supplier_quality_iqc", where={"supplier_name": sup})
-                iqc = _serialize_rows(iqc)
-                monthly = query_table("supplier_quality_iqc_monthly",
-                                      where={"supplier_name": sup}, order_by="ic_month")
-                monthly = _serialize_rows(monthly)
-                supplier_quality[sup] = {
-                    "iqc_summary": iqc[:5] if iqc else [],
-                    "monthly_trend": monthly[-6:] if monthly else [],
-                }
+                from database import execute_query as _exec
+                placeholders = ",".join(["%s"] * len(suspect_suppliers))
+                iqc_sql = f"SELECT * FROM supplier_quality_iqc WHERE supplier_name IN ({placeholders})"
+                iqc_rows = _exec(iqc_sql, tuple(suspect_suppliers))
+                iqc_rows = _serialize_rows(iqc_rows) if iqc_rows else []
+                for r in iqc_rows:
+                    sup = r.get("supplier_name", "")
+                    if sup not in supplier_quality:
+                        supplier_quality[sup] = {"iqc_summary": [], "monthly_trend": []}
+                    supplier_quality[sup]["iqc_summary"].append(r)
+
+                monthly_sql = f"SELECT * FROM supplier_quality_iqc_monthly WHERE supplier_name IN ({placeholders}) ORDER BY ic_month"
+                monthly_rows = _exec(monthly_sql, tuple(suspect_suppliers))
+                monthly_rows = _serialize_rows(monthly_rows) if monthly_rows else []
+                for r in monthly_rows:
+                    sup = r.get("supplier_name", "")
+                    if sup in supplier_quality:
+                        supplier_quality[sup]["monthly_trend"].append(r)
             except Exception as e:
-                supplier_quality[sup] = {"error": str(e)}
+                for sup in suspect_suppliers:
+                    supplier_quality[sup] = {"error": str(e)}
         result["suspect_supplier_quality"] = supplier_quality
 
-        # ====== 5. 统计维修实际更换的物料 ======
+        # ====== 5. 统计维修实际更换的物料（批量查询） ======
         repair_material_counter: dict[str, int] = {}
-        for sn in sample_sns:
+        if sample_sns:
             try:
-                repairs = query_table("maintain_consume_material", where={"sn_no": sn})
-                for r in repairs:
+                from database import execute_query as _exec
+                placeholders = ",".join(["%s"] * len(sample_sns))
+                repair_sql = f"SELECT * FROM maintain_consume_material WHERE sn_no IN ({placeholders})"
+                repairs = _exec(repair_sql, tuple(sample_sns))
+                for r in (repairs or []):
                     mat_name = r.get("maintain_material_name", "")
                     if mat_name:
                         repair_material_counter[mat_name] = repair_material_counter.get(mat_name, 0) + (r.get("consume_material_count") or 1)
@@ -1280,7 +1292,7 @@ OPENAI_TOOLS_SCHEMA = [
                     "sku_name": {"type": "string", "description": "按SKU名称过滤（可选），如'米家空气净化器 4 Lite'"},
                     "defect_material": {"type": "string", "description": "按不良物料名称过滤（可选），聚焦特定物料的根因追溯"},
                     "defect_cause": {"type": "string", "description": "按不良原因过滤（可选），聚焦特定故障类型的根因追溯"},
-                    "limit": {"type": "integer", "description": "最大查询行数，默认500。设为0表示不限制（慎用，可能超时）"},
+                    "limit": {"type": "integer", "description": "最大查询行数，默认0表示不限制，返回全部数据"},
                 },
                 "required": [],
             },
