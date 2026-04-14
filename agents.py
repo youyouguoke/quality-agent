@@ -198,99 +198,110 @@ def _try_update_agents_md(section: str, new_content: str):
 
 
 def _try_reflect_and_update(client: OpenAI, messages: list[dict], matched_skills: list[dict],
-                            query: str = "", user: str = None):
+                            query: str = "", user: str = None, tool_call_count: int = 0):
     """
-    反思步骤：分析完成后让 LLM 评估执行质量，自动改进 Skill 和 AGENTS.md。
-    失败时静默忽略，不影响主流程。
+    反思步骤：分析完成后评估执行质量并自动改进。
+    根据分析复杂度决定反思级别：
+      - 简单查询（0-1次工具调用）：只做记忆沉淀，跳过反思
+      - 深度分析（2+次工具调用）：完整反思（Skill更新 + AGENTS.md更新 + 案例沉淀 + 记忆沉淀）
     """
-    # ---- 1. Skill/AGENTS.md 反思 ----
-    try:
-        reflect_messages = messages.copy()
-        reflect_messages.append({"role": "user", "content": REFLECTION_PROMPT})
+    is_deep_analysis = tool_call_count >= 2
 
-        response = client.chat.completions.create(
-            model=LLM_CONFIG["model"],
-            messages=reflect_messages,
-            temperature=0.3,
-            max_tokens=800,
-        )
-        reflect_text = response.choices[0].message.content or ""
+    # ---- 1. Skill/AGENTS.md 反思（仅深度分析时触发） ----
+    if is_deep_analysis:
+        logger.info("深度分析（%d次工具调用），执行完整反思", tool_call_count)
+        try:
+            reflect_messages = messages.copy()
+            reflect_messages.append({"role": "user", "content": REFLECTION_PROMPT})
 
-        json_match = re.search(r"\{[\s\S]*\}", reflect_text)
-        if not json_match:
-            logger.debug("反思未返回有效 JSON")
-        else:
-            reflection = json.loads(json_match.group())
+            response = client.chat.completions.create(
+                model=LLM_CONFIG["model"],
+                messages=reflect_messages,
+                temperature=0.3,
+                max_tokens=800,
+            )
+            reflect_text = response.choices[0].message.content or ""
 
-            # 记录执行问题
-            issues = reflection.get("execution_issues", [])
-            if issues:
-                logger.info("反思发现执行问题: %s", issues)
+            json_match = re.search(r"\{[\s\S]*\}", reflect_text)
+            if not json_match:
+                logger.debug("反思未返回有效 JSON")
+            else:
+                reflection = json.loads(json_match.group())
 
-            # 更新 Skill
-            if reflection.get("should_update") and matched_skills:
-                skill_name = reflection.get("skill_name", "")
-                update_section = reflection.get("update_section", "知识")
-                new_content = reflection.get("new_content", "")
-                improvement_note = reflection.get("improvement_note", "")
+                # 记录执行问题
+                issues = reflection.get("execution_issues", [])
+                if issues:
+                    logger.info("反思发现执行问题: %s", issues)
 
-                if skill_name and new_content:
-                    from skill_manager import append_improvement_log, update_skill
+                # 更新 Skill
+                if reflection.get("should_update") and matched_skills:
+                    skill_name = reflection.get("skill_name", "")
+                    update_section = reflection.get("update_section", "知识")
+                    new_content = reflection.get("new_content", "")
+                    improvement_note = reflection.get("improvement_note", "")
 
-                    target_skill = None
-                    for s in matched_skills:
-                        if s["name"] == skill_name:
-                            target_skill = s
-                            break
+                    if skill_name and new_content:
+                        from skill_manager import append_improvement_log, update_skill
 
-                    if target_skill:
-                        current = target_skill.get(update_section.lower(), target_skill.get("knowledge", ""))
-                        updated = current.rstrip() + "\n" + new_content
-                        update_skill(skill_name, update_section, updated)
+                        target_skill = None
+                        for s in matched_skills:
+                            if s["name"] == skill_name:
+                                target_skill = s
+                                break
 
-                        old_version = target_skill.get("version", "1.0")
-                        parts = old_version.split(".")
-                        new_version = f"{parts[0]}.{int(parts[-1]) + 1}"
-                        append_improvement_log(skill_name, new_version, improvement_note)
-                        logger.info("Skill [%s] 已自动更新至 v%s: %s", skill_name, new_version, improvement_note)
+                        if target_skill:
+                            current = target_skill.get(update_section.lower(), target_skill.get("knowledge", ""))
+                            updated = current.rstrip() + "\n" + new_content
+                            update_skill(skill_name, update_section, updated)
 
-            # 更新 AGENTS.md
-            agents_update = reflection.get("agents_md_update", {})
-            if agents_update.get("should_update"):
-                _try_update_agents_md(
-                    agents_update.get("section", ""),
-                    agents_update.get("new_content", ""),
-                )
+                            old_version = target_skill.get("version", "1.0")
+                            parts = old_version.split(".")
+                            new_version = f"{parts[0]}.{int(parts[-1]) + 1}"
+                            append_improvement_log(skill_name, new_version, improvement_note)
+                            logger.info("Skill [%s] 已自动更新至 v%s: %s", skill_name, new_version, improvement_note)
 
-            # 沉淀案例
-            new_case = reflection.get("new_case", {})
-            if new_case.get("should_save") and new_case.get("title") and new_case.get("content"):
-                from knowledge_base import save_case
-                save_case(new_case["title"], new_case["content"])
-                logger.info("已沉淀新分析案例: %s", new_case["title"])
+                # 更新 AGENTS.md
+                agents_update = reflection.get("agents_md_update", {})
+                if agents_update.get("should_update"):
+                    _try_update_agents_md(
+                        agents_update.get("section", ""),
+                        agents_update.get("new_content", ""),
+                    )
 
-    except Exception as e:
-        logger.debug("反思更新失败（不影响主流程）: %s", e)
+                # 沉淀案例
+                new_case = reflection.get("new_case", {})
+                if new_case.get("should_save") and new_case.get("title") and new_case.get("content"):
+                    from knowledge_base import save_case
+                    save_case(new_case["title"], new_case["content"])
+                    logger.info("已沉淀新分析案例: %s", new_case["title"])
 
-    # ---- 2. 记忆沉淀 ----
-    try:
-        memory_messages = messages.copy()
-        memory_messages.append({"role": "user", "content": MEMORY_EXTRACT_PROMPT})
+        except Exception as e:
+            logger.debug("反思更新失败（不影响主流程）: %s", e)
+    else:
+        logger.debug("简单查询（%d次工具调用），跳过Skill反思", tool_call_count)
 
-        mem_response = client.chat.completions.create(
-            model=LLM_CONFIG["model"],
-            messages=memory_messages,
-            temperature=0.3,
-            max_tokens=500,
-        )
-        mem_text = mem_response.choices[0].message.content or ""
-        mem_match = re.search(r"\{[\s\S]*\}", mem_text)
-        if mem_match:
-            mem_json = json.loads(mem_match.group())
-            if save_memory_from_reflection(mem_json, query=query, user=user):
-                logger.info("已沉淀分析记忆: %s/%s", mem_json.get("category"), mem_json.get("subject"))
-    except Exception as e:
-        logger.debug("记忆沉淀失败（不影响主流程）: %s", e)
+    # ---- 2. 记忆沉淀（有工具调用时才执行，纯问答不沉淀） ----
+    if tool_call_count >= 1:
+        try:
+            memory_messages = messages.copy()
+            memory_messages.append({"role": "user", "content": MEMORY_EXTRACT_PROMPT})
+
+            mem_response = client.chat.completions.create(
+                model=LLM_CONFIG["model"],
+                messages=memory_messages,
+                temperature=0.3,
+                max_tokens=500,
+            )
+            mem_text = mem_response.choices[0].message.content or ""
+            mem_match = re.search(r"\{[\s\S]*\}", mem_text)
+            if mem_match:
+                mem_json = json.loads(mem_match.group())
+                if save_memory_from_reflection(mem_json, query=query, user=user):
+                    logger.info("已沉淀分析记忆: %s/%s", mem_json.get("category"), mem_json.get("subject"))
+        except Exception as e:
+            logger.debug("记忆沉淀失败（不影响主流程）: %s", e)
+    else:
+        logger.debug("无工具调用，跳过记忆沉淀")
 
 
 def run_master_agent(
@@ -377,9 +388,9 @@ def run_master_agent(
             save_to_session(session_id, "user", query)
             save_to_session(session_id, "assistant", answer)
 
-            # 反思：分析是否有可以改进 Skill 的地方
+            # 反思：根据分析深度决定反思级别
             _try_reflect_and_update(client, messages + [{"role": "assistant", "content": answer}], matched_skills,
-                                   query=query, user=user)
+                                   query=query, user=user, tool_call_count=len(tool_records))
 
             return {
                 "answer": answer,
@@ -435,9 +446,9 @@ def run_master_agent(
     save_to_session(session_id, "user", query)
     save_to_session(session_id, "assistant", answer)
 
-    # 反思：分析是否有可以改进 Skill 的地方
+    # 反思：根据分析深度决定反思级别
     _try_reflect_and_update(client, messages + [{"role": "assistant", "content": answer}], matched_skills,
-                           query=query, user=user)
+                           query=query, user=user, tool_call_count=len(tool_records))
 
     return {
         "answer": answer,
