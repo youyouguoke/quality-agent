@@ -603,3 +603,254 @@ def get_all_skill_metrics() -> list[dict]:
             except Exception:
                 continue
     return sorted(result, key=lambda m: m.get("score", 0))
+
+
+# ======================== 未覆盖问题跟踪 + Skill 自动生成 ========================
+
+UNCOVERED_PATH = os.path.join(SKILLS_DIR, "_uncovered.json")
+
+# 同类问题累积几次后触发自动生成
+AUTO_GEN_THRESHOLD = 3
+
+
+def _load_uncovered() -> dict:
+    """加载未覆盖问题记录"""
+    if os.path.exists(UNCOVERED_PATH):
+        try:
+            with open(UNCOVERED_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"clusters": {}}
+
+
+def _save_uncovered(data: dict):
+    """保存未覆盖问题记录"""
+    os.makedirs(os.path.dirname(UNCOVERED_PATH), exist_ok=True)
+    try:
+        with open(UNCOVERED_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+    except Exception as e:
+        logger.error("保存未覆盖问题记录失败: %s", e)
+
+
+def _classify_query(query: str) -> str:
+    """
+    对未匹配问题做简单分类，返回类别标签。
+    相似问题归为一类，用于判断是否达到自动生成阈值。
+    """
+    q = query.lower()
+
+    # 预定义的分类关键词（覆盖常见质量分析场景）
+    categories = {
+        "对比分析": ["对比", "比较", "哪个好", "排名", "排序"],
+        "趋势分析": ["趋势", "月度", "季度", "走势", "变化"],
+        "成本分析": ["成本", "费用", "损失", "金额"],
+        "效率分析": ["效率", "周期", "时长", "耗时", "速度"],
+        "预测分析": ["预测", "预估", "预判", "未来", "下个月"],
+        "关联分析": ["关联", "相关", "影响", "因素"],
+        "异常检测": ["异常", "突变", "偏离", "离群"],
+        "改善跟踪": ["改善", "改进", "效果", "验证", "跟踪", "闭环"],
+        "报表导出": ["报表", "导出", "汇总", "报告", "周报", "月报"],
+        "人员分析": ["人员", "工程师", "负责人", "团队"],
+    }
+
+    for cat, keywords in categories.items():
+        for kw in keywords:
+            if kw in q:
+                return cat
+
+    return "其他"
+
+
+def record_uncovered_query(query: str) -> Optional[str]:
+    """
+    记录一个未被 Skill 覆盖的问题。
+    如果同类问题累积达到阈值，返回类别名（提示需要自动生成）；否则返回 None。
+    """
+    data = _load_uncovered()
+    clusters = data.get("clusters", {})
+
+    category = _classify_query(query)
+    if category not in clusters:
+        clusters[category] = {"queries": [], "count": 0, "generated": False}
+
+    cluster = clusters[category]
+
+    # 避免完全重复
+    if query not in cluster["queries"]:
+        cluster["queries"].append(query)
+        cluster["count"] += 1
+
+    # 只保留最近 10 条问题样本
+    if len(cluster["queries"]) > 10:
+        cluster["queries"] = cluster["queries"][-10:]
+
+    data["clusters"] = clusters
+    _save_uncovered(data)
+
+    # 检查是否达到阈值且尚未生成
+    if cluster["count"] >= AUTO_GEN_THRESHOLD and not cluster["generated"]:
+        logger.info("未覆盖问题类别 [%s] 已累积 %d 次，触发 Skill 自动生成",
+                    category, cluster["count"])
+        return category
+
+    return None
+
+
+def generate_skill_from_queries(client, category: str) -> Optional[str]:
+    """
+    让 LLM 根据累积的未覆盖问题自动生成一个新 Skill。
+
+    Args:
+        client: OpenAI client 实例
+        category: 问题类别名
+
+    Returns:
+        生成的 Skill 名称，失败返回 None
+    """
+    data = _load_uncovered()
+    cluster = data.get("clusters", {}).get(category)
+    if not cluster:
+        return None
+
+    queries = cluster.get("queries", [])
+    if not queries:
+        return None
+
+    # 获取现有 Skill 列表，避免重复
+    existing_skills = load_all_skills()
+    existing_names = [s["name"] for s in existing_skills]
+    existing_triggers = []
+    for s in existing_skills:
+        existing_triggers.extend(s.get("triggers", []))
+
+    prompt = f"""你是质量管理 AI Agent 的 Skill 设计师。用户反复问了一类问题，但当前系统没有对应的 Skill 来处理。
+请根据这些问题设计一个新的 Skill。
+
+## 用户问题样本（类别：{category}）
+{chr(10).join(f'- {q}' for q in queries)}
+
+## 已有的 Skill（不要重复）
+{chr(10).join(f'- {n}' for n in existing_names)}
+
+## 已有的触发关键词（不要重复）
+{', '.join(existing_triggers[:30])}
+
+## 可用数据表
+- sn_quality_data（SN质量数据）
+- sn_quality_key_material（SN关键物料）
+- supplier_quality_iqc（供应商IQC）
+- supplier_quality_iqc_monthly（供应商月度IQC）
+- supplier_performance_comparison（供应商对比）
+- return_data（客退数据）
+- maintain_consume_material（维修消耗物料）
+
+## 可用工具
+query_table, aggregate_query, time_range_query, sn_full_trace, supplier_overview, sku_overview, factory_overview, return_overview, root_cause_analysis, comparative_analysis, baseline_compare, search_knowledge
+
+请严格按以下 Markdown 格式输出完整的 Skill 文件内容（不要输出其他内容）：
+
+```markdown
+# Skill名称
+
+## 元信息
+- **版本**: 1.0
+- **创建时间**: {date.today().isoformat()}
+- **最后更新**: {date.today().isoformat()}
+- **触发条件**: 关键词1、关键词2、关键词3（用于匹配用户问题）
+
+## 描述
+一句话说明这个 Skill 的用途。
+
+## 知识
+列出该分析场景需要的领域知识和判断标准。
+
+## 流程
+列出具体的执行步骤，说明调用哪些工具、怎样组合数据。
+
+## 输出格式
+定义报告的输出结构和格式要求。
+
+## 改进日志
+- v1.0 ({date.today().isoformat()}): 由系统根据用户需求自动生成
+```"""
+
+    try:
+        from config import LLM_CONFIG
+
+        response = client.chat.completions.create(
+            model=LLM_CONFIG["model"],
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=2000,
+        )
+        skill_content = response.choices[0].message.content or ""
+
+        # 提取 markdown 代码块中的内容（如果有）
+        md_match = re.search(r"```markdown\s*\n([\s\S]*?)\n```", skill_content)
+        if md_match:
+            skill_content = md_match.group(1)
+
+        # 确保以 # 标题开头
+        if not skill_content.strip().startswith("#"):
+            logger.warning("自动生成的 Skill 格式不正确")
+            return None
+
+        # 提取 Skill 名称
+        title_match = re.match(r"^#\s+(.+)", skill_content.strip())
+        if not title_match:
+            return None
+        skill_name = title_match.group(1).strip()
+
+        # 检查是否与已有 Skill 重名
+        if skill_name in existing_names:
+            logger.warning("自动生成的 Skill [%s] 与已有 Skill 重名，跳过", skill_name)
+            return None
+
+        # 保存文件
+        filename = _safe_name(skill_name) + ".md"
+        filepath = os.path.join(SKILLS_DIR, filename)
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(skill_content)
+
+        # 标记已生成
+        data["clusters"][category]["generated"] = True
+        data["clusters"][category]["generated_skill"] = skill_name
+        data["clusters"][category]["generated_time"] = datetime.now().isoformat()
+        _save_uncovered(data)
+
+        # 刷新缓存
+        load_all_skills(force_reload=True)
+
+        logger.info("已自动生成新 Skill [%s]（基于 %d 条未覆盖问题）", skill_name, len(queries))
+        return skill_name
+
+    except Exception as e:
+        logger.error("自动生成 Skill 失败: %s", e)
+        return None
+
+
+def get_uncovered_summary() -> dict:
+    """获取未覆盖问题的统计摘要"""
+    data = _load_uncovered()
+    clusters = data.get("clusters", {})
+    summary = {
+        "total_categories": len(clusters),
+        "total_queries": sum(c.get("count", 0) for c in clusters.values()),
+        "pending_generation": [],
+        "already_generated": [],
+    }
+    for cat, info in clusters.items():
+        entry = {
+            "category": cat,
+            "count": info.get("count", 0),
+            "sample_queries": info.get("queries", [])[:3],
+        }
+        if info.get("generated"):
+            entry["generated_skill"] = info.get("generated_skill")
+            summary["already_generated"].append(entry)
+        else:
+            summary["pending_generation"].append(entry)
+
+    return summary

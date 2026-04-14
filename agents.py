@@ -25,8 +25,10 @@ from models import AgentStep, ChatMessage, ToolCallRecord
 from skill_manager import (
     build_skill_prompt,
     evaluate_and_maybe_rollback,
+    generate_skill_from_queries,
     match_skills,
     record_skill_usage,
+    record_uncovered_query,
 )
 from tools import OPENAI_TOOLS_SCHEMA, execute_tool
 from user_profile import (
@@ -380,6 +382,18 @@ def run_master_agent(
     skill_prompt = build_skill_prompt(matched_skills)
     if matched_skills:
         logger.info("匹配到 Skill: %s", [s["name"] for s in matched_skills])
+    else:
+        # 未匹配到 Skill，记录未覆盖问题
+        trigger_category = record_uncovered_query(query)
+        if trigger_category:
+            # 累积达到阈值，尝试自动生成新 Skill
+            logger.info("触发 Skill 自动生成（类别: %s）", trigger_category)
+            new_skill_name = generate_skill_from_queries(client, trigger_category)
+            if new_skill_name:
+                logger.info("新 Skill [%s] 已自动生成，重新匹配", new_skill_name)
+                # 重新匹配（新 Skill 可能匹配当前问题）
+                matched_skills = match_skills(query)
+                skill_prompt = build_skill_prompt(matched_skills)
 
     # 构建 system prompt = 基础 prompt + 数据上下文 + 用户画像 + 知识上下文 + 匹配的 Skill
     system_prompt = BASE_SYSTEM_PROMPT.format(data_context=_build_all_data_context())
