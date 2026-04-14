@@ -727,6 +727,214 @@ def tool_root_cause_analysis(sku_name: str = None, defect_material: str = None,
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
+# ======================== 对比推理分析工具 ========================
+
+def tool_comparative_analysis(sku_name: str = None, supplier_name: str = None,
+                               defect_material: str = None,
+                               compare_type: str = "cross_sku") -> str:
+    """
+    对比推理分析：通过对比不同维度的数据验证或排除假设，实现反事实推理。
+
+    支持三种对比模式：
+    - cross_sku: 同供应商/物料在不同SKU上的表现（验证是否为供应商通病）
+    - cross_supplier: 同物料不同供应商的对比（验证是否为特定供应商问题）
+    - cross_time: 同SKU/供应商不同时间段的对比（验证是否为批次性问题）
+    """
+    result = {"compare_type": compare_type}
+
+    try:
+        if compare_type == "cross_sku":
+            # ====== 同供应商在不同SKU上的不良表现 ======
+            # 假设：供应商A的物料有问题 → 那其他使用供应商A物料的SKU也应该有问题
+            if not supplier_name:
+                return json.dumps({"error": "cross_sku 对比需要提供 supplier_name"}, ensure_ascii=False)
+
+            # 查该供应商在所有SKU上的不良记录
+            rows = query_table(
+                "return_data",
+                columns=["sku_name", "defect_material_supplier", "defect_material", "defect_cause"],
+                where={"defect_material_supplier": supplier_name},
+                limit=0,
+            )
+            rows = _serialize_rows(rows)
+
+            # 按 SKU 统计
+            sku_stats: dict[str, dict] = {}
+            for r in rows:
+                sku = r.get("sku_name", "未知")
+                if sku not in sku_stats:
+                    sku_stats[sku] = {"count": 0, "causes": {}, "materials": {}}
+                sku_stats[sku]["count"] += 1
+
+                cause = r.get("defect_cause", "")
+                if cause:
+                    for c in str(cause).split(","):
+                        c = c.strip()
+                        if c:
+                            sku_stats[sku]["causes"][c] = sku_stats[sku]["causes"].get(c, 0) + 1
+
+                mat = r.get("defect_material", "")
+                if mat:
+                    for m in str(mat).split(","):
+                        m = m.strip()
+                        if m:
+                            sku_stats[sku]["materials"][m] = sku_stats[sku]["materials"].get(m, 0) + 1
+
+            # 整理输出
+            comparison = []
+            for sku, stats in sorted(sku_stats.items(), key=lambda x: x[1]["count"], reverse=True):
+                top_cause = max(stats["causes"].items(), key=lambda x: x[1]) if stats["causes"] else ("-", 0)
+                top_material = max(stats["materials"].items(), key=lambda x: x[1]) if stats["materials"] else ("-", 0)
+                comparison.append({
+                    "sku_name": sku,
+                    "defect_count": stats["count"],
+                    "top_defect_cause": top_cause[0],
+                    "top_cause_count": top_cause[1],
+                    "top_defect_material": top_material[0],
+                    "top_material_count": top_material[1],
+                })
+
+            result["supplier_name"] = supplier_name
+            result["sku_comparison"] = comparison
+            result["total_skus_affected"] = len(comparison)
+
+            # 推理判断
+            if len(comparison) > 1:
+                result["inference"] = f"供应商 {supplier_name} 的不良问题涉及 {len(comparison)} 个SKU，可能是供应商端的系统性问题"
+            elif len(comparison) == 1:
+                result["inference"] = f"供应商 {supplier_name} 的不良仅出现在 {comparison[0]['sku_name']}，可能是该SKU特有的装配或设计问题，而非供应商通病"
+
+        elif compare_type == "cross_supplier":
+            # ====== 同物料不同供应商的对比 ======
+            # 假设：物料X有设计缺陷 → 那所有供应商的物料X都应该有问题
+            if not defect_material:
+                return json.dumps({"error": "cross_supplier 对比需要提供 defect_material"}, ensure_ascii=False)
+
+            # 从 supplier_performance_comparison 表获取同物料不同供应商的数据
+            rows = query_table(
+                "supplier_performance_comparison",
+                where={"material_name": defect_material},
+                limit=0,
+            )
+            rows = _serialize_rows(rows)
+
+            supplier_comparison = []
+            for r in rows:
+                supplier_comparison.append({
+                    "supplier_name": r.get("supplier_name", ""),
+                    "material_name": r.get("material_name", ""),
+                    "batch_yield": r.get("batch_yield", ""),
+                    "supply_quantity": r.get("supply_quantity", ""),
+                    "return_quantity": r.get("return_quantity", ""),
+                    "return_rate": r.get("return_rate", ""),
+                })
+
+            # 同时从客退数据中统计各供应商的不良次数
+            defect_rows = query_table(
+                "return_data",
+                columns=["defect_material_supplier", "defect_material"],
+                limit=0,
+            )
+            defect_rows = _serialize_rows(defect_rows)
+
+            supplier_defect_count: dict[str, int] = {}
+            for r in defect_rows:
+                mat = str(r.get("defect_material", ""))
+                if defect_material not in mat:
+                    continue
+                sup = r.get("defect_material_supplier", "")
+                if sup:
+                    for s in str(sup).split(","):
+                        s = s.strip()
+                        if s:
+                            supplier_defect_count[s] = supplier_defect_count.get(s, 0) + 1
+
+            result["defect_material"] = defect_material
+            result["supplier_comparison"] = supplier_comparison
+            result["supplier_defect_counts"] = [
+                {"supplier": k, "defect_count": v}
+                for k, v in sorted(supplier_defect_count.items(), key=lambda x: x[1], reverse=True)
+            ]
+
+            # 推理判断
+            if len(supplier_defect_count) > 1:
+                top_sup = max(supplier_defect_count.items(), key=lambda x: x[1])
+                total_defects = sum(supplier_defect_count.values())
+                top_ratio = top_sup[1] / total_defects * 100 if total_defects else 0
+                if top_ratio > 70:
+                    result["inference"] = (
+                        f"物料「{defect_material}」的不良高度集中在供应商 {top_sup[0]}（占{top_ratio:.0f}%），"
+                        f"其他供应商不良较少，大概率是该供应商的来料质量问题"
+                    )
+                else:
+                    result["inference"] = (
+                        f"物料「{defect_material}」的不良分散在多个供应商，"
+                        f"可能是物料设计规格本身存在问题，而非某个供应商的个别问题"
+                    )
+            elif len(supplier_defect_count) == 1:
+                result["inference"] = f"物料「{defect_material}」只有一个供应商有不良记录，无法排除供应商个体问题"
+
+        elif compare_type == "cross_time":
+            # ====== 同SKU不同时间段的对比 ======
+            # 验证问题是突发（批次性）还是持续存在
+            if not sku_name:
+                return json.dumps({"error": "cross_time 对比需要提供 sku_name"}, ensure_ascii=False)
+
+            from database import execute_query
+
+            sql = """
+                SELECT DATE_FORMAT(return_time, '%%Y-%%m') AS month,
+                       COUNT(*) AS total_returns,
+                       SUM(CASE WHEN defect_cause IS NOT NULL AND defect_cause != '' THEN 1 ELSE 0 END) AS with_defect,
+                       GROUP_CONCAT(DISTINCT defect_cause) AS defect_causes
+                FROM return_data
+                WHERE sku_name = %s
+                GROUP BY DATE_FORMAT(return_time, '%%Y-%%m')
+                ORDER BY month
+            """
+            rows = execute_query(sql, (sku_name,))
+            if not rows:
+                result["monthly_trend"] = []
+                result["inference"] = "无历史数据"
+                return json.dumps(result, ensure_ascii=False, default=str)
+
+            monthly = []
+            for r in rows:
+                monthly.append({
+                    "month": r["month"],
+                    "total_returns": r["total_returns"],
+                    "with_defect": r["with_defect"],
+                    "defect_causes": r.get("defect_causes", ""),
+                })
+
+            result["sku_name"] = sku_name
+            result["monthly_trend"] = monthly
+
+            # 推理判断：检测是否有突增
+            if len(monthly) >= 2:
+                values = [m["total_returns"] for m in monthly]
+                avg_val = sum(values[:-1]) / len(values[:-1]) if len(values) > 1 else values[0]
+                latest = values[-1]
+                if avg_val > 0 and latest > avg_val * 1.5:
+                    result["inference"] = (
+                        f"{sku_name} 最近一个月退货 {latest} 台，"
+                        f"历史月均 {avg_val:.0f} 台，突增 {((latest/avg_val)-1)*100:.0f}%，"
+                        f"可能是批次性问题导致的突发异常"
+                    )
+                else:
+                    result["inference"] = f"{sku_name} 退货量相对稳定，问题可能是长期存在的慢性问题"
+
+        else:
+            result["error"] = f"不支持的对比类型: {compare_type}"
+
+        result["has_data"] = True
+        return json.dumps(result, ensure_ascii=False, default=str)
+
+    except Exception as e:
+        logger.error("tool_comparative_analysis 错误: %s", e)
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
 # ======================== 告警查询工具 ========================
 
 def tool_get_alerts(level: str = None, limit: int = 20) -> str:
@@ -784,6 +992,7 @@ TOOL_REGISTRY: dict[str, callable] = {
     "baseline_compare": tool_baseline_compare,
     "search_knowledge": tool_search_knowledge,
     "root_cause_analysis": tool_root_cause_analysis,
+    "comparative_analysis": tool_comparative_analysis,
     "get_alerts": tool_get_alerts,
     "run_check_now": tool_run_check_now,
 }
@@ -1074,6 +1283,27 @@ OPENAI_TOOLS_SCHEMA = [
                     "limit": {"type": "integer", "description": "返回行数上限，默认0表示不限制，返回全部数据"},
                 },
                 "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "comparative_analysis",
+            "description": "对比推理分析：验证根因假设的可靠性。支持三种对比模式——cross_sku（同供应商在不同SKU上是否都有问题，验证供应商通病 vs SKU特有问题）、cross_supplier（同物料不同供应商的质量对比，验证供应商个体问题 vs 物料设计问题）、cross_time（同SKU不同月份的退货趋势，验证突发批次问题 vs 慢性问题）。在根因分析中用于反向验证初步结论。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sku_name": {"type": "string", "description": "SKU名称（cross_time 模式必填）"},
+                    "supplier_name": {"type": "string", "description": "供应商名称（cross_sku 模式必填）"},
+                    "defect_material": {"type": "string", "description": "不良物料名称（cross_supplier 模式必填）"},
+                    "compare_type": {
+                        "type": "string",
+                        "enum": ["cross_sku", "cross_supplier", "cross_time"],
+                        "description": "对比模式：cross_sku=同供应商跨SKU对比, cross_supplier=同物料跨供应商对比, cross_time=跨时间对比",
+                    },
+                },
+                "required": ["compare_type"],
             },
         },
     },
