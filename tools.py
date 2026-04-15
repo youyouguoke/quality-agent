@@ -1,8 +1,7 @@
 """
 质量管理 AI Agent 系统 - 工具层
 定义所有供 Agent 通过 Function Calling 调用的工具。
-包括：数据查询工具、统计分析工具、元数据工具。
-每个工具包含 OpenAI Function Calling 格式的 schema 和执行函数。
+所有数据查询统一通过 MCP 协议访问，不直接连接数据库。
 """
 import json
 import logging
@@ -10,15 +9,15 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from database import (
-    get_all_table_info,
-    get_table_info,
-    get_table_row_count,
-    query_table,
-    query_table_aggregate,
-    query_table_like,
-    query_table_time_range,
-)
+from config import TABLE_SCHEMAS
+
+logger = logging.getLogger(__name__)
+
+
+def _mcp_call(tool_name: str, args: dict = None, user: str = None):
+    """统一的 MCP 调用入口"""
+    from mcp_client import call_tool
+    return call_tool(tool_name, args or {}, user=user)
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +48,47 @@ def _serialize_rows(rows: list[dict]) -> list[dict]:
 def tool_query_table(table_key: str, columns: list[str] | None = None,
                      where: dict | None = None, order_by: str | None = None,
                      limit: int = 0) -> str:
-    """查询质量数据表"""
+    """查询质量数据表（通过 MCP 的 get_return_data 等工具）"""
     try:
-        rows = query_table(table_key, columns=columns, where=where,
-                           order_by=order_by, limit=limit)
+        # 根据 table_key 映射到对应的 MCP 工具
+        mcp_mapping = {
+            "return_data": "get_return_data",
+            "sn_quality_data": "get_sn_quality_data",
+            "sn_quality_key_material": "get_sn_key_material",
+            "supplier_quality_iqc": "get_supplier_iqc",
+            "supplier_quality_iqc_monthly": "get_supplier_iqc_monthly",
+            "supplier_performance_comparison": "get_supplier_performance_comparison",
+            "maintain_consume_material": "get_maintain_consume_material",
+        }
+        mcp_tool = mcp_mapping.get(table_key)
+        if not mcp_tool:
+            return json.dumps({"error": f"不支持的表: {table_key}"}, ensure_ascii=False)
+
+        args = {}
+        if where:
+            args.update(where)
+        if limit and limit > 0:
+            args["limit"] = limit
+
+        data = _mcp_call(mcp_tool, args)
+        if isinstance(data, dict) and "error" in data:
+            return json.dumps(data, ensure_ascii=False)
+
+        rows = data if isinstance(data, list) else ([data] if data else [])
         rows = _serialize_rows(rows)
+
+        # 本地做列过滤
+        if columns and rows:
+            rows = [{k: r.get(k) for k in columns if k in r} for r in rows]
+        # 本地排序
+        if order_by and rows:
+            reverse = False
+            col = order_by
+            if order_by.startswith("-"):
+                reverse = True
+                col = order_by[1:]
+            rows.sort(key=lambda r: r.get(col, ""), reverse=reverse)
+
         return json.dumps({"count": len(rows), "data": rows}, ensure_ascii=False)
     except Exception as e:
         logger.error("tool_query_table 错误: %s", e)
@@ -62,26 +97,60 @@ def tool_query_table(table_key: str, columns: list[str] | None = None,
 
 def tool_search_table(table_key: str, column: str, keyword: str,
                       limit: int = 0) -> str:
-    """模糊搜索质量数据表"""
+    """模糊搜索质量数据表（通过 MCP 查全量后本地过滤）"""
     try:
-        rows = query_table_like(table_key, column, keyword, limit=limit)
-        rows = _serialize_rows(rows)
-        return json.dumps({"count": len(rows), "data": rows}, ensure_ascii=False)
+        result = json.loads(tool_query_table(table_key, limit=limit))
+        if "error" in result:
+            return json.dumps(result, ensure_ascii=False)
+        rows = result.get("data", [])
+        # 本地模糊过滤
+        filtered = [r for r in rows if keyword.lower() in str(r.get(column, "")).lower()]
+        return json.dumps({"count": len(filtered), "data": filtered}, ensure_ascii=False)
     except Exception as e:
         logger.error("tool_search_table 错误: %s", e)
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
 def tool_aggregate_query(table_key: str, group_by: str, agg_column: str,
-                         agg_func: str = "AVG", where: dict | None = None,
+                         agg_func: str = "COUNT", where: dict | None = None,
                          limit: int = 0) -> str:
-    """聚合统计查询"""
+    """聚合统计查询（通过 MCP 查数据后本地聚合）"""
     try:
-        rows = query_table_aggregate(table_key, group_by=group_by,
-                                     agg_column=agg_column, agg_func=agg_func,
-                                     where=where, limit=limit)
-        rows = _serialize_rows(rows)
-        return json.dumps({"count": len(rows), "data": rows}, ensure_ascii=False)
+        result = json.loads(tool_query_table(table_key, where=where, limit=limit))
+        if "error" in result:
+            return json.dumps(result, ensure_ascii=False)
+        rows = result.get("data", [])
+
+        # 本地分组聚合
+        from collections import defaultdict
+        groups: dict[str, list] = defaultdict(list)
+        for r in rows:
+            key = str(r.get(group_by, ""))
+            val = r.get(agg_column)
+            if val is not None:
+                groups[key].append(val)
+
+        agg_results = []
+        for key, values in groups.items():
+            agg_val = None
+            if agg_func.upper() == "COUNT":
+                agg_val = len(values)
+            elif agg_func.upper() == "SUM":
+                agg_val = sum(float(v) for v in values if v is not None)
+            elif agg_func.upper() == "AVG":
+                nums = [float(v) for v in values if v is not None]
+                agg_val = sum(nums) / len(nums) if nums else 0
+            elif agg_func.upper() == "MAX":
+                agg_val = max(values)
+            elif agg_func.upper() == "MIN":
+                agg_val = min(values)
+            agg_results.append({group_by: key, f"{agg_func}({agg_column})": agg_val})
+
+        agg_results.sort(key=lambda r: r.get(f"{agg_func}({agg_column})", 0), reverse=True)
+        if limit and limit > 0:
+            agg_results = agg_results[:limit]
+
+        return json.dumps({"count": len(agg_results), "data": agg_results}, ensure_ascii=False)
     except Exception as e:
         logger.error("tool_aggregate_query 错误: %s", e)
         return json.dumps({"error": str(e)}, ensure_ascii=False)
@@ -90,62 +159,81 @@ def tool_aggregate_query(table_key: str, group_by: str, agg_column: str,
 def tool_time_range_query(table_key: str, time_column: str, start: str,
                           end: str, columns: list[str] | None = None,
                           where: dict | None = None, limit: int = 0) -> str:
-    """时间范围查询"""
+    """时间范围查询（通过 MCP 查数据后本地过滤时间范围）"""
     try:
-        rows = query_table_time_range(table_key, time_column=time_column,
-                                      start=start, end=end, columns=columns,
-                                      where=where, limit=limit)
-        rows = _serialize_rows(rows)
-        return json.dumps({"count": len(rows), "data": rows}, ensure_ascii=False)
+        result = json.loads(tool_query_table(table_key, columns=columns, where=where, limit=limit))
+        if "error" in result:
+            return json.dumps(result, ensure_ascii=False)
+        rows = result.get("data", [])
+
+        # 本地过滤时间范围
+        filtered = []
+        for r in rows:
+            time_val = str(r.get(time_column, ""))
+            if time_val and start <= time_val <= end:
+                filtered.append(r)
+
+        return json.dumps({"count": len(filtered), "data": filtered}, ensure_ascii=False)
     except Exception as e:
         logger.error("tool_time_range_query 错误: %s", e)
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
 def tool_get_table_info(table_key: str) -> str:
-    """获取指定数据表的元信息"""
+    """获取指定数据表的元信息（从配置读取）"""
     try:
-        info = get_table_info(table_key)
-        return json.dumps(info, ensure_ascii=False)
+        schema = TABLE_SCHEMAS.get(table_key)
+        if not schema:
+            return json.dumps({"error": f"未找到表: {table_key}"}, ensure_ascii=False)
+        return json.dumps({
+            "table_key": table_key,
+            "description": schema.get("description", ""),
+            "columns": schema.get("columns", []),
+            "column_mapping": schema.get("column_mapping", {}),
+        }, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
 def tool_list_all_tables() -> str:
-    """列出全部质量数据表及其说明"""
+    """列出全部质量数据表及其说明（从配置读取）"""
     try:
-        infos = get_all_table_info()
+        infos = []
+        for key, schema in TABLE_SCHEMAS.items():
+            infos.append({
+                "table_key": key,
+                "description": schema.get("description", ""),
+                "columns": schema.get("columns", []),
+            })
         return json.dumps(infos, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
 def tool_get_table_count(table_key: str) -> str:
-    """获取表行数"""
+    """获取表行数（通过 MCP 查询后计数）"""
     try:
-        count = get_table_row_count(table_key)
+        result = json.loads(tool_query_table(table_key))
+        if "error" in result:
+            return json.dumps(result, ensure_ascii=False)
+        count = result.get("count", 0)
         return json.dumps({"table": table_key, "row_count": count}, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
 def tool_sn_full_trace(sn: str) -> str:
-    """
-    SN全链路溯源：一次性查询SN的质量数据 + 关键物料数据。
-    这是一个组合工具，避免Agent多次调用。
-    """
+    """SN全链路溯源：通过 MCP 一次性查询SN的质量数据 + 关键物料数据。"""
     result = {}
     try:
-        # 查询SN质量数据
-        quality = query_table("sn_quality_data", where={"sn_no": sn})
-        result["quality_data"] = _serialize_rows(quality)
+        quality = _mcp_call("get_sn_quality_data", {"sn_no": sn})
+        result["quality_data"] = _serialize_rows(quality if isinstance(quality, list) else ([quality] if quality and "error" not in quality else []))
 
-        # 查询SN关键物料
-        materials = query_table("sn_quality_key_material", where={"sn_no": sn})
-        result["key_materials"] = _serialize_rows(materials)
+        materials = _mcp_call("get_sn_key_material", {"sn_no": sn})
+        result["key_materials"] = _serialize_rows(materials if isinstance(materials, list) else ([materials] if materials and "error" not in materials else []))
 
         result["sn"] = sn
-        result["has_data"] = bool(quality)
+        result["has_data"] = bool(result["quality_data"])
         return json.dumps(result, ensure_ascii=False)
     except Exception as e:
         logger.error("tool_sn_full_trace 错误: %s", e)
@@ -153,24 +241,20 @@ def tool_sn_full_trace(sn: str) -> str:
 
 
 def tool_supplier_overview(supplier: str) -> str:
-    """
-    供应商质量概览：一次性查询供应商的IQC数据 + 月度趋势 + 横向对比。
-    """
+    """供应商质量概览：通过 MCP 一次性查询IQC数据 + 月度趋势 + 横向对比。"""
     result = {}
     try:
-        iqc = query_table("supplier_quality_iqc", where={"supplier_name": supplier})
-        result["iqc_data"] = _serialize_rows(iqc)
+        iqc = _mcp_call("get_supplier_iqc", {"supplier_name": supplier})
+        result["iqc_data"] = _serialize_rows(iqc if isinstance(iqc, list) else ([iqc] if iqc and "error" not in iqc else []))
 
-        monthly = query_table("supplier_quality_iqc_monthly", where={"supplier_name": supplier},
-                              order_by="ic_month")
-        result["monthly_trend"] = _serialize_rows(monthly)
+        monthly = _mcp_call("get_supplier_iqc_monthly", {"supplier_name": supplier})
+        result["monthly_trend"] = _serialize_rows(monthly if isinstance(monthly, list) else ([monthly] if monthly and "error" not in monthly else []))
 
-        comparison = query_table("supplier_performance_comparison",
-                                 where={"supplier_name": supplier})
-        result["performance_comparison"] = _serialize_rows(comparison)
+        comparison = _mcp_call("get_supplier_performance_comparison", {"supplier_name": supplier})
+        result["performance_comparison"] = _serialize_rows(comparison if isinstance(comparison, list) else ([comparison] if comparison and "error" not in comparison else []))
 
         result["supplier"] = supplier
-        result["has_data"] = bool(iqc)
+        result["has_data"] = bool(result["iqc_data"])
         return json.dumps(result, ensure_ascii=False)
     except Exception as e:
         logger.error("tool_supplier_overview 错误: %s", e)
@@ -178,46 +262,30 @@ def tool_supplier_overview(supplier: str) -> str:
 
 
 def tool_factory_overview(factory: str) -> str:
-    """
-    代工厂质量概览：一次性查询代工厂的整体质量数据 + 月度趋势。
-    """
+    """代工厂质量概览：通过 MCP 查询客退数据按工厂过滤。"""
     result = {"factory": factory}
     try:
-        quality = query_table("factory_quality", where={"production_factory": factory})
-        result["quality_data"] = _serialize_rows(quality)
+        data = _mcp_call("get_return_data", {"production_factory": factory})
+        rows = data if isinstance(data, list) else ([data] if data and "error" not in (data if isinstance(data, dict) else {}) else [])
+        result["quality_data"] = _serialize_rows(rows)
+        result["has_data"] = bool(rows)
     except Exception as e:
         result["quality_data_error"] = str(e)
-
-    try:
-        monthly = query_table("factory_quality_monthly", where={"production_factory": factory},
-                              order_by="month")
-        result["monthly_trend"] = _serialize_rows(monthly)
-    except Exception as e:
-        result["monthly_trend_error"] = str(e)
-
-    result["has_data"] = bool(result.get("quality_data") or result.get("monthly_trend"))
+        result["has_data"] = False
     return json.dumps(result, ensure_ascii=False)
 
 
 def tool_sku_overview(sku_name: str) -> str:
-    """
-    SKU质量概览：一次性查询SKU的整体质量数据 + 月度趋势。
-    """
+    """SKU质量概览：通过 MCP 查询客退数据按SKU过滤。"""
     result = {"sku_name": sku_name}
     try:
-        quality = query_table("sku_quality", where={"sku_name": sku_name})
-        result["quality_data"] = _serialize_rows(quality)
+        data = _mcp_call("get_return_data", {"sku_name": sku_name})
+        rows = data if isinstance(data, list) else ([data] if data and "error" not in (data if isinstance(data, dict) else {}) else [])
+        result["quality_data"] = _serialize_rows(rows)
+        result["has_data"] = bool(rows)
     except Exception as e:
         result["quality_data_error"] = str(e)
-
-    try:
-        monthly = query_table("sku_quality_monthly", where={"sku_name": sku_name},
-                              order_by="month")
-        result["monthly_trend"] = _serialize_rows(monthly)
-    except Exception as e:
-        result["monthly_trend_error"] = str(e)
-
-    result["has_data"] = bool(result.get("quality_data") or result.get("monthly_trend"))
+        result["has_data"] = False
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -592,19 +660,15 @@ def tool_root_cause_analysis(sku_name: str = None, defect_material: str = None,
     result = {}
 
     try:
-        # ====== 1. 从 return_data 获取相关客退SN ======
-        where = {}
+        # ====== 1. 从 return_data 获取相关客退SN（通过 MCP） ======
+        mcp_args = {}
         if sku_name:
-            where["sku_name"] = sku_name
-        # 只取有复测结果的记录（有实际不良判定）
-        return_rows = query_table(
-            "return_data",
-            columns=["sn_no", "sku_name", "production_factory", "defect_cause",
-                     "defect_material", "defect_material_batch", "defect_material_supplier",
-                     "retest_result", "responsibility_owner", "state"],
-            where=where,
-            limit=limit,
-        )
+            mcp_args["sku_name"] = sku_name
+        if limit and limit > 0:
+            mcp_args["limit"] = limit
+
+        return_data = _mcp_call("get_return_data", mcp_args)
+        return_rows = return_data if isinstance(return_data, list) else ([return_data] if return_data and "error" not in (return_data if isinstance(return_data, dict) else {}) else [])
         return_rows = _serialize_rows(return_rows)
 
         # 如果指定了不良物料或不良原因，做二次过滤
@@ -665,20 +729,22 @@ def tool_root_cause_analysis(sku_name: str = None, defect_material: str = None,
                 {"batch": b, "count": c} for b, c in top_batches
             ]
 
-        # ====== 3. 追溯SN关键物料（批量查询，避免逐个SN串行查询导致超时） ======
-        sample_sns = sn_list[:20]
+        # ====== 3. 追溯SN关键物料（通过 MCP 逐个查询，抽样5个） ======
+        sample_sns = sn_list[:5]
         if sample_sns:
-            try:
-                from database import execute_query as _exec
-                placeholders = ",".join(["%s"] * len(sample_sns))
-                mat_sql = f"SELECT * FROM sn_quality_key_material WHERE sn_no IN ({placeholders})"
-                sn_materials_raw = _exec(mat_sql, tuple(sample_sns))
-                sn_materials = _serialize_rows(sn_materials_raw) if sn_materials_raw else []
-                result["sn_key_materials_sample"] = sn_materials[:50]
-            except Exception:
-                result["sn_key_materials_sample"] = []
+            sn_materials = []
+            for sn in sample_sns:
+                try:
+                    mats = _mcp_call("get_sn_key_material", {"sn_no": sn})
+                    if isinstance(mats, list):
+                        sn_materials.extend(_serialize_rows(mats))
+                    elif isinstance(mats, dict) and "error" not in mats:
+                        sn_materials.append(_serialize(mats))
+                except Exception:
+                    pass
+            result["sn_key_materials_sample"] = sn_materials[:50]
 
-        # ====== 4. 查询嫌疑供应商的IQC质量（批量查询） ======
+        # ====== 4. 查询嫌疑供应商的IQC质量（通过 MCP） ======
         suspect_suppliers = set()
         for item in material_supplier_analysis[:5]:
             sup = item.get("supplier")
@@ -686,40 +752,29 @@ def tool_root_cause_analysis(sku_name: str = None, defect_material: str = None,
                 suspect_suppliers.add(sup)
 
         supplier_quality = {}
-        if suspect_suppliers:
+        for sup in suspect_suppliers:
             try:
-                from database import execute_query as _exec
-                placeholders = ",".join(["%s"] * len(suspect_suppliers))
-                iqc_sql = f"SELECT * FROM supplier_quality_iqc WHERE supplier_name IN ({placeholders})"
-                iqc_rows = _exec(iqc_sql, tuple(suspect_suppliers))
-                iqc_rows = _serialize_rows(iqc_rows) if iqc_rows else []
-                for r in iqc_rows:
-                    sup = r.get("supplier_name", "")
-                    if sup not in supplier_quality:
-                        supplier_quality[sup] = {"iqc_summary": [], "monthly_trend": []}
-                    supplier_quality[sup]["iqc_summary"].append(r)
+                iqc = _mcp_call("get_supplier_iqc", {"supplier_name": sup})
+                iqc_rows = iqc if isinstance(iqc, list) else ([iqc] if iqc and "error" not in (iqc if isinstance(iqc, dict) else {}) else [])
 
-                monthly_sql = f"SELECT * FROM supplier_quality_iqc_monthly WHERE supplier_name IN ({placeholders}) ORDER BY ic_month"
-                monthly_rows = _exec(monthly_sql, tuple(suspect_suppliers))
-                monthly_rows = _serialize_rows(monthly_rows) if monthly_rows else []
-                for r in monthly_rows:
-                    sup = r.get("supplier_name", "")
-                    if sup in supplier_quality:
-                        supplier_quality[sup]["monthly_trend"].append(r)
+                monthly = _mcp_call("get_supplier_iqc_monthly", {"supplier_name": sup})
+                monthly_rows = monthly if isinstance(monthly, list) else ([monthly] if monthly and "error" not in (monthly if isinstance(monthly, dict) else {}) else [])
+
+                supplier_quality[sup] = {
+                    "iqc_summary": _serialize_rows(iqc_rows)[:5],
+                    "monthly_trend": _serialize_rows(monthly_rows)[-6:],
+                }
             except Exception as e:
-                for sup in suspect_suppliers:
-                    supplier_quality[sup] = {"error": str(e)}
+                supplier_quality[sup] = {"error": str(e)}
         result["suspect_supplier_quality"] = supplier_quality
 
-        # ====== 5. 统计维修实际更换的物料（批量查询） ======
+        # ====== 5. 统计维修实际更换的物料（通过 MCP） ======
         repair_material_counter: dict[str, int] = {}
-        if sample_sns:
+        for sn in sample_sns:
             try:
-                from database import execute_query as _exec
-                placeholders = ",".join(["%s"] * len(sample_sns))
-                repair_sql = f"SELECT * FROM maintain_consume_material WHERE sn_no IN ({placeholders})"
-                repairs = _exec(repair_sql, tuple(sample_sns))
-                for r in (repairs or []):
+                repairs = _mcp_call("get_maintain_consume_material", {"sn_no": sn})
+                repair_list = repairs if isinstance(repairs, list) else ([repairs] if repairs and "error" not in (repairs if isinstance(repairs, dict) else {}) else [])
+                for r in repair_list:
                     mat_name = r.get("maintain_material_name", "")
                     if mat_name:
                         repair_material_counter[mat_name] = repair_material_counter.get(mat_name, 0) + (r.get("consume_material_count") or 1)
@@ -761,13 +816,9 @@ def tool_comparative_analysis(sku_name: str = None, supplier_name: str = None,
             if not supplier_name:
                 return json.dumps({"error": "cross_sku 对比需要提供 supplier_name"}, ensure_ascii=False)
 
-            # 查该供应商在所有SKU上的不良记录
-            rows = query_table(
-                "return_data",
-                columns=["sku_name", "defect_material_supplier", "defect_material", "defect_cause"],
-                where={"defect_material_supplier": supplier_name},
-                limit=0,
-            )
+            # 查该供应商在所有SKU上的不良记录（通过 MCP）
+            data = _mcp_call("get_return_data", {"defect_material_supplier": supplier_name})
+            rows = data if isinstance(data, list) else ([data] if data and "error" not in (data if isinstance(data, dict) else {}) else [])
             rows = _serialize_rows(rows)
 
             # 按 SKU 统计
@@ -822,12 +873,9 @@ def tool_comparative_analysis(sku_name: str = None, supplier_name: str = None,
             if not defect_material:
                 return json.dumps({"error": "cross_supplier 对比需要提供 defect_material"}, ensure_ascii=False)
 
-            # 从 supplier_performance_comparison 表获取同物料不同供应商的数据
-            rows = query_table(
-                "supplier_performance_comparison",
-                where={"material_name": defect_material},
-                limit=0,
-            )
+            # 从 supplier_performance_comparison 表获取同物料不同供应商的数据（通过 MCP）
+            comp_data = _mcp_call("get_supplier_performance_comparison", {"material_name": defect_material})
+            rows = comp_data if isinstance(comp_data, list) else ([comp_data] if comp_data and "error" not in (comp_data if isinstance(comp_data, dict) else {}) else [])
             rows = _serialize_rows(rows)
 
             supplier_comparison = []
@@ -841,12 +889,9 @@ def tool_comparative_analysis(sku_name: str = None, supplier_name: str = None,
                     "return_rate": r.get("return_rate", ""),
                 })
 
-            # 同时从客退数据中统计各供应商的不良次数
-            defect_rows = query_table(
-                "return_data",
-                columns=["defect_material_supplier", "defect_material"],
-                limit=0,
-            )
+            # 同时从客退数据中统计各供应商的不良次数（通过 MCP）
+            defect_data = _mcp_call("get_return_data", {"defect_material": defect_material})
+            defect_rows = defect_data if isinstance(defect_data, list) else ([defect_data] if defect_data and "error" not in (defect_data if isinstance(defect_data, dict) else {}) else [])
             defect_rows = _serialize_rows(defect_rows)
 
             supplier_defect_count: dict[str, int] = {}
@@ -892,31 +937,37 @@ def tool_comparative_analysis(sku_name: str = None, supplier_name: str = None,
             if not sku_name:
                 return json.dumps({"error": "cross_time 对比需要提供 sku_name"}, ensure_ascii=False)
 
-            from database import execute_query
+            # 通过 MCP 查该 SKU 的全部客退数据，本地按月统计
+            data = _mcp_call("get_return_data", {"sku_name": sku_name})
+            rows = data if isinstance(data, list) else ([data] if data and "error" not in (data if isinstance(data, dict) else {}) else [])
+            rows = _serialize_rows(rows)
 
-            sql = """
-                SELECT DATE_FORMAT(return_time, '%%Y-%%m') AS month,
-                       COUNT(*) AS total_returns,
-                       SUM(CASE WHEN defect_cause IS NOT NULL AND defect_cause != '' THEN 1 ELSE 0 END) AS with_defect,
-                       GROUP_CONCAT(DISTINCT defect_cause) AS defect_causes
-                FROM return_data
-                WHERE sku_name = %s
-                GROUP BY DATE_FORMAT(return_time, '%%Y-%%m')
-                ORDER BY month
-            """
-            rows = execute_query(sql, (sku_name,))
             if not rows:
                 result["monthly_trend"] = []
                 result["inference"] = "无历史数据"
                 return json.dumps(result, ensure_ascii=False, default=str)
 
-            monthly = []
+            # 本地按月分组统计
+            from collections import defaultdict as _defaultdict
+            month_stats: dict[str, dict] = _defaultdict(lambda: {"total": 0, "with_defect": 0, "causes": set()})
             for r in rows:
+                rt = str(r.get("return_time", ""))[:7]  # 取 YYYY-MM
+                if not rt or len(rt) < 7:
+                    continue
+                month_stats[rt]["total"] += 1
+                cause = r.get("defect_cause", "")
+                if cause:
+                    month_stats[rt]["with_defect"] += 1
+                    month_stats[rt]["causes"].add(cause)
+
+            monthly = []
+            for m in sorted(month_stats.keys()):
+                s = month_stats[m]
                 monthly.append({
-                    "month": r["month"],
-                    "total_returns": r["total_returns"],
-                    "with_defect": r["with_defect"],
-                    "defect_causes": r.get("defect_causes", ""),
+                    "month": m,
+                    "total_returns": s["total"],
+                    "with_defect": s["with_defect"],
+                    "defect_causes": ",".join(s["causes"]),
                 })
 
             result["sku_name"] = sku_name

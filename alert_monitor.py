@@ -238,30 +238,38 @@ def _batch_notify_feishu(new_alerts: list[dict]):
 
 # ======================== 巡检规则 ========================
 
+def _mcp_get_return_data(args: dict = None) -> list[dict]:
+    """调 MCP get_return_data 获取客退数据"""
+    from mcp_client import call_tool
+    data = call_tool("get_return_data", args or {})
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and "error" not in data:
+        return [data]
+    return []
+
+
 def _check_return_volume_spike() -> list[dict]:
-    """规则1: SKU 退货量环比突增检测"""
+    """规则1: SKU 退货量环比突增检测（通过 MCP 获取数据后本地统计）"""
     new_alerts = []
     try:
-        from database import execute_query
-
-        sql = """
-            SELECT sku_name,
-                   DATE_FORMAT(return_time, '%%Y-%%m') AS month,
-                   COUNT(*) AS cnt
-            FROM return_data
-            WHERE return_time >= DATE_SUB(CURDATE(), INTERVAL 2 MONTH)
-            GROUP BY sku_name, DATE_FORMAT(return_time, '%%Y-%%m')
-            ORDER BY sku_name, month
-        """
-        rows = execute_query(sql)
+        rows = _mcp_get_return_data()
         if not rows:
             return new_alerts
 
+        # 本地按 SKU + 月份统计
         sku_monthly: dict[str, dict[str, int]] = defaultdict(dict)
         for r in rows:
-            sku_monthly[r["sku_name"]][r["month"]] = r["cnt"]
+            sku = r.get("sku_name", "")
+            rt = str(r.get("return_time", ""))[:7]
+            if sku and rt and len(rt) >= 7:
+                sku_monthly[sku][rt] = sku_monthly[sku].get(rt, 0) + 1
 
-        months = sorted(set(r["month"] for r in rows))
+        # 取最近两个月
+        all_months = set()
+        for monthly in sku_monthly.values():
+            all_months.update(monthly.keys())
+        months = sorted(all_months)
         if len(months) < 2:
             return new_alerts
 
@@ -296,38 +304,34 @@ def _check_return_volume_spike() -> list[dict]:
 
 
 def _check_defect_concentration() -> list[dict]:
-    """规则2: 不良原因/物料集中度过高检测"""
+    """规则2: 不良原因/物料集中度过高检测（通过 MCP 获取数据后本地统计）"""
     new_alerts = []
     try:
-        from database import execute_query
-
-        sql = """
-            SELECT sku_name, defect_cause, COUNT(*) AS cnt
-            FROM return_data
-            WHERE return_time >= DATE_SUB(CURDATE(), INTERVAL 1 MONTH)
-              AND retest_result IS NOT NULL AND retest_result != ''
-              AND defect_cause IS NOT NULL AND defect_cause != ''
-            GROUP BY sku_name, defect_cause
-            ORDER BY sku_name, cnt DESC
-        """
-        rows = execute_query(sql)
+        rows = _mcp_get_return_data()
         if not rows:
             return new_alerts
 
+        # 本地过滤有复测结果且有不良原因的记录，按 SKU 统计
         sku_total: dict[str, int] = defaultdict(int)
-        sku_top: dict[str, tuple[str, int]] = {}
-        for r in rows:
-            sku = r["sku_name"]
-            cnt = r["cnt"]
-            sku_total[sku] += cnt
-            if sku not in sku_top or cnt > sku_top[sku][1]:
-                sku_top[sku] = (r["defect_cause"], cnt)
+        sku_cause_count: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
 
-        for sku, (cause, cnt) in sku_top.items():
+        for r in rows:
+            retest = r.get("retest_result")
+            cause = r.get("defect_cause")
+            sku = r.get("sku_name", "")
+            if not retest or not cause or not sku:
+                continue
+            sku_total[sku] += 1
+            sku_cause_count[sku][cause] += 1
+
+        for sku, causes in sku_cause_count.items():
             total = sku_total[sku]
             if total < 5:
                 continue
+            top_cause = max(causes.items(), key=lambda x: x[1])
+            cause, cnt = top_cause
             ratio = cnt / total * 100
+
             if ratio > 50:
                 new_alerts.append(_add_alert(
                     level="critical", rule="defect_concentration",
@@ -350,86 +354,75 @@ def _check_defect_concentration() -> list[dict]:
 
 
 def _check_supplier_iqc() -> list[dict]:
-    """规则3: 供应商最近一个月 IQC 抽检不合格次数检测（基于客退数据中的不良物料供应商）"""
+    """规则3: 供应商不良物料关联次数检测（通过 MCP 获取数据后本地统计）"""
     new_alerts = []
     try:
-        from database import execute_query
-
-        # 从最近一个月的客退数据中，统计各不良物料供应商被关联的不合格次数
-        sql = """
-            SELECT defect_material_supplier, COUNT(*) AS unqualified_count
-            FROM return_data
-            WHERE return_time >= DATE_SUB(CURDATE(), INTERVAL 1 MONTH)
-              AND defect_material_supplier IS NOT NULL
-              AND defect_material_supplier != ''
-              AND retest_result IS NOT NULL
-              AND retest_result != ''
-            GROUP BY defect_material_supplier
-            ORDER BY unqualified_count DESC
-        """
-        rows = execute_query(sql)
+        rows = _mcp_get_return_data()
         if not rows:
             return new_alerts
 
-        # 获取当前月份用于展示
         current_month = datetime.now().strftime("%Y-%m")
 
+        # 本地统计各供应商的不良关联次数
+        supplier_count: dict[str, int] = defaultdict(int)
         for r in rows:
-            # defect_material_supplier 可能含逗号分隔的多个供应商，需拆分
-            raw_supplier = r["defect_material_supplier"]
-            unqualified = r["unqualified_count"]
+            retest = r.get("retest_result")
+            raw_sup = r.get("defect_material_supplier")
+            if not retest or not raw_sup:
+                continue
+            for sup in str(raw_sup).split(","):
+                sup = sup.strip()
+                if sup:
+                    supplier_count[sup] += 1
 
-            for supplier in str(raw_supplier).split(","):
-                supplier = supplier.strip()
-                if not supplier:
-                    continue
-
-                if unqualified > 3:
-                    new_alerts.append(_add_alert(
-                        level="critical", rule="supplier_iqc_unqualified",
-                        title=f"供应商 {supplier} 近一月IQC抽检不合格次数过多",
-                        detail=f"最近一个月不合格 {unqualified} 次，超过严重阈值(>3次)",
-                        data={"supplier_name": supplier, "month": current_month,
-                              "iqc_batch": "-", "qualified_batch": "-",
-                              "unqualified": unqualified},
-                    ))
-                elif unqualified > 2:
-                    new_alerts.append(_add_alert(
-                        level="warning", rule="supplier_iqc_unqualified",
-                        title=f"供应商 {supplier} 近一月IQC抽检不合格次数偏多",
-                        detail=f"最近一个月不合格 {unqualified} 次，超过预警阈值(>2次)",
-                        data={"supplier_name": supplier, "month": current_month,
-                              "iqc_batch": "-", "qualified_batch": "-",
-                              "unqualified": unqualified},
-                    ))
+        for supplier, unqualified in sorted(supplier_count.items(), key=lambda x: x[1], reverse=True):
+            if unqualified > 3:
+                new_alerts.append(_add_alert(
+                    level="critical", rule="supplier_iqc_unqualified",
+                    title=f"供应商 {supplier} 不良物料关联次数过多",
+                    detail=f"关联不良 {unqualified} 次，超过严重阈值(>3次)",
+                    data={"supplier_name": supplier, "month": current_month,
+                          "iqc_batch": "-", "qualified_batch": "-",
+                          "unqualified": unqualified},
+                ))
+            elif unqualified > 2:
+                new_alerts.append(_add_alert(
+                    level="warning", rule="supplier_iqc_unqualified",
+                    title=f"供应商 {supplier} 不良物料关联次数偏多",
+                    detail=f"关联不良 {unqualified} 次，超过预警阈值(>2次)",
+                    data={"supplier_name": supplier, "month": current_month,
+                          "iqc_batch": "-", "qualified_batch": "-",
+                          "unqualified": unqualified},
+                ))
     except Exception as e:
         logger.error("巡检规则 [supplier_iqc_unqualified] 执行失败: %s", e)
     return new_alerts
 
 
 def _check_retest_backlog() -> list[dict]:
-    """规则4: SKU 复测完成率检测（全量数据）"""
+    """规则4: SKU 复测完成率检测（通过 MCP 获取全量数据后本地统计）"""
     new_alerts = []
     try:
-        from database import execute_query
-
-        sql = """
-            SELECT sku_name,
-                   COUNT(*) AS total,
-                   SUM(CASE WHEN retest_result IS NOT NULL AND retest_result != '' THEN 1 ELSE 0 END) AS retested
-            FROM return_data
-            GROUP BY sku_name
-            HAVING total >= 10
-        """
-        rows = execute_query(sql)
+        rows = _mcp_get_return_data()
         if not rows:
             return new_alerts
 
+        # 本地按 SKU 统计复测完成率
+        sku_total: dict[str, int] = defaultdict(int)
+        sku_retested: dict[str, int] = defaultdict(int)
         for r in rows:
-            sku = r["sku_name"]
-            total = r["total"]
-            retested = r["retested"] or 0
-            completion_rate = retested / total * 100 if total else 100
+            sku = r.get("sku_name", "")
+            if not sku:
+                continue
+            sku_total[sku] += 1
+            if r.get("retest_result"):
+                sku_retested[sku] += 1
+
+        for sku, total in sku_total.items():
+            if total < 10:
+                continue
+            retested = sku_retested.get(sku, 0)
+            completion_rate = retested / total * 100
 
             if completion_rate < 60:
                 new_alerts.append(_add_alert(

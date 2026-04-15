@@ -34,8 +34,7 @@ from alert_monitor import (
     start_monitor,
     stop_monitor,
 )
-from config import API_CONFIG, LLM_CONFIG
-from database import get_all_table_info, get_pool
+from config import API_CONFIG, LLM_CONFIG, TABLE_SCHEMAS
 from models import (
     ChatRequest,
     ChatResponse,
@@ -57,11 +56,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """应用启动/关闭时的初始化和清理"""
     logger.info("质量管理 AI Agent 系统启动中...")
-    try:
-        get_pool()
-        logger.info("MySQL 连接池就绪")
-    except Exception as e:
-        logger.warning("MySQL 连接池初始化失败（服务仍启动，查询时会重试）: %s", e)
+    logger.info("数据访问方式: MCP (dm.zhimi.com/mcp)")
 
     # 启动质量预警巡检线程
     start_monitor()
@@ -163,10 +158,11 @@ async def health_check():
     """检查服务、数据库和LLM连接的健康状态"""
     db_status = "unknown"
     try:
-        get_pool()
-        db_status = "healthy"
+        from mcp_client import call_tool
+        test = call_tool("get_employee_info", {"employee_name": "test"})
+        db_status = "healthy (MCP)"
     except Exception as e:
-        db_status = f"unhealthy: {e}"
+        db_status = f"mcp_error: {e}"
 
     llm_status = "configured" if LLM_CONFIG["api_key"] else "not_configured"
 
@@ -189,7 +185,9 @@ async def health_check():
 async def list_tables():
     """返回全部质量数据表的元信息"""
     try:
-        return {"tables": get_all_table_info()}
+        infos = [{"table_key": k, "description": v.get("description", ""), "columns": v.get("columns", [])}
+                 for k, v in TABLE_SCHEMAS.items()]
+        return {"tables": infos}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
