@@ -62,6 +62,12 @@ def tool_query_table(table_key: str, columns: list[str] | None = None,
             "iqc_ng": "get_iqc_ng",
             "pqc_ng": "get_pqc_ng",
             "oqc_ng": "get_oqc_ng",
+            "sku_quality": "get_sku_quality",
+            "sku_quality_monthly": "get_sku_quality_monthly",
+            "factory_quality": "get_factory_quality",
+            "factory_quality_monthly": "get_factory_quality_monthly",
+            "part_quality": "get_part_quality",
+            "part_quality_monthly": "get_part_quality_monthly",
         }
         mcp_tool = mcp_mapping.get(table_key)
         if not mcp_tool:
@@ -265,30 +271,44 @@ def tool_supplier_overview(supplier: str) -> str:
 
 
 def tool_factory_overview(factory: str) -> str:
-    """代工厂质量概览：通过 MCP 查询客退数据按工厂过滤。"""
+    """代工厂质量概览：通过 MCP 查询代工厂质量数据 + 月度趋势。"""
     result = {"factory": factory}
     try:
-        data = _mcp_call("get_return_data", {"production_factory": factory})
-        rows = data if isinstance(data, list) else ([data] if data and "error" not in (data if isinstance(data, dict) else {}) else [])
+        quality = _mcp_call("get_factory_quality", {"production_factory": factory})
+        rows = quality if isinstance(quality, list) else ([quality] if quality and "error" not in (quality if isinstance(quality, dict) else {}) else [])
         result["quality_data"] = _serialize_rows(rows)
-        result["has_data"] = bool(rows)
     except Exception as e:
         result["quality_data_error"] = str(e)
-        result["has_data"] = False
+
+    try:
+        monthly = _mcp_call("get_factory_quality_monthly", {"production_factory": factory})
+        rows = monthly if isinstance(monthly, list) else ([monthly] if monthly and "error" not in (monthly if isinstance(monthly, dict) else {}) else [])
+        result["monthly_trend"] = _serialize_rows(rows)
+    except Exception as e:
+        result["monthly_trend_error"] = str(e)
+
+    result["has_data"] = bool(result.get("quality_data") or result.get("monthly_trend"))
     return json.dumps(result, ensure_ascii=False)
 
 
 def tool_sku_overview(sku_name: str) -> str:
-    """SKU质量概览：通过 MCP 查询客退数据按SKU过滤。"""
+    """SKU质量概览：通过 MCP 查询SKU质量数据 + 月度趋势。"""
     result = {"sku_name": sku_name}
     try:
-        data = _mcp_call("get_return_data", {"sku_name": sku_name})
-        rows = data if isinstance(data, list) else ([data] if data and "error" not in (data if isinstance(data, dict) else {}) else [])
+        quality = _mcp_call("get_sku_quality", {"sku_name": sku_name})
+        rows = quality if isinstance(quality, list) else ([quality] if quality and "error" not in (quality if isinstance(quality, dict) else {}) else [])
         result["quality_data"] = _serialize_rows(rows)
-        result["has_data"] = bool(rows)
     except Exception as e:
         result["quality_data_error"] = str(e)
-        result["has_data"] = False
+
+    try:
+        monthly = _mcp_call("get_sku_quality_monthly", {"sku_name": sku_name})
+        rows = monthly if isinstance(monthly, list) else ([monthly] if monthly and "error" not in (monthly if isinstance(monthly, dict) else {}) else [])
+        result["monthly_trend"] = _serialize_rows(rows)
+    except Exception as e:
+        result["monthly_trend_error"] = str(e)
+
+    result["has_data"] = bool(result.get("quality_data") or result.get("monthly_trend"))
     return json.dumps(result, ensure_ascii=False)
 
 

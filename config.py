@@ -85,11 +85,8 @@ TABLE_NAMES = {
 }
 
 # 当前数据库中尚未创建的表（保留配置，查询时返回友好提示）
-UNAVAILABLE_TABLES = {
-    "sku_quality", "sku_quality_monthly",
-    "factory_quality", "factory_quality_monthly",
-    "part_quality", "part_quality_monthly",
-}
+# 当前数据库中尚未创建的表（保留配置，查询时返回友好提示）
+UNAVAILABLE_TABLES = set()
 
 # ======================== 数据表字段定义 ========================
 # 用于Agent理解数据结构，以及构建安全的SQL查询
@@ -182,7 +179,7 @@ TABLE_SCHEMAS = {
         },
     },
     "sku_quality": {
-        "description": "SKU的生产、出货和客退质量数据（当前不可用）",
+        "description": "SKU的生产、出货和客退质量数据",
         "source": "PQC、OQC和客退数据",
         "columns": [
             "sku_name", "production_factory", "yield_rate",
@@ -209,7 +206,7 @@ TABLE_SCHEMAS = {
         },
     },
     "sku_quality_monthly": {
-        "description": "SKU月度质量数据（当前不可用）",
+        "description": "SKU月度质量数据",
         "source": "PQC、OQC和客退数据",
         "columns": [
             "sku_name", "production_factory", "month", "yield_rate",
@@ -238,7 +235,7 @@ TABLE_SCHEMAS = {
         },
     },
     "factory_quality": {
-        "description": "代工厂的进料、生产、出货和客退质量数据（当前不可用）",
+        "description": "代工厂的进料、生产、出货和客退质量数据",
         "source": "IQC、PQC、OQC和客退数据",
         "columns": [
             "production_factory", "iqc_batch_pass_rate", "yield_rate",
@@ -268,7 +265,7 @@ TABLE_SCHEMAS = {
         },
     },
     "factory_quality_monthly": {
-        "description": "代工厂月度的进料、生产、出货和客退质量数据（当前不可用）",
+        "description": "代工厂月度的进料、生产、出货和客退质量数据",
         "source": "IQC、PQC、OQC和客退数据",
         "columns": [
             "production_factory", "month", "iqc_batch_pass_rate", "yield_rate",
@@ -301,7 +298,7 @@ TABLE_SCHEMAS = {
         },
     },
     "part_quality": {
-        "description": "物料的进货、退货和进料检验批次合格率质量数据（当前不可用）",
+        "description": "物料的进货、退货和进料检验批次合格率质量数据",
         "source": "IQC数据",
         "columns": [
             "material_code", "material_name", "supplier_name", "supply_batch",
@@ -317,7 +314,7 @@ TABLE_SCHEMAS = {
         },
     },
     "part_quality_monthly": {
-        "description": "物料月度的进货、退货和进料检验批次合格率质量数据（当前不可用）",
+        "description": "物料月度的进货、退货和进料检验批次合格率质量数据",
         "source": "IQC数据",
         "columns": [
             "material_code", "material_name", "month", "supplier_name",
