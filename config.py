@@ -71,7 +71,6 @@ TABLE_NAMES = {
     "factory_quality": "Factory_Quality",
     "factory_quality_monthly": "Factory_Quality_Monthly",
     # 7.5 物料质量数据
-    "part_quality": "Part_Quality",
     "part_quality_monthly": "Part_Quality_Monthly",
     # 7.6 IQC NG记录
     "iqc_ng": "IQC_NG",
@@ -85,9 +84,7 @@ TABLE_NAMES = {
 }
 
 # 当前数据库中尚未创建的表（保留配置，查询时返回友好提示）
-UNAVAILABLE_TABLES = {
-    "part_quality",
-}
+UNAVAILABLE_TABLES = set()
 
 # ======================== 数据表字段定义 ========================
 # 用于Agent理解数据结构，以及构建安全的SQL查询
@@ -298,22 +295,6 @@ TABLE_SCHEMAS = {
             "seven_no_unreasonable_count": "7无不合理数", "should_return_count": "应回退数",
         },
     },
-    "part_quality": {
-        "description": "物料的进货、退货和进料检验批次合格率质量数据",
-        "source": "IQC数据",
-        "columns": [
-            "material_code", "material_name", "supplier_name", "supply_batch",
-            "average_price", "supply_quantity", "return_quantity",
-            "iqc_batch_pass_rate", "return_rate",
-        ],
-        "column_mapping": {
-            "material_code": "物料编码", "material_name": "物料名称",
-            "supplier_name": "供应商", "supply_batch": "供货批次",
-            "average_price": "平均价格", "supply_quantity": "供货数量",
-            "return_quantity": "退货数量", "iqc_batch_pass_rate": "进料检验批次合格率",
-            "return_rate": "退货率",
-        },
-    },
     "part_quality_monthly": {
         "description": "物料月度的进货、退货和进料检验批次合格率质量数据",
         "source": "IQC数据",
@@ -455,7 +436,7 @@ AGENT_ROUTING = {
     "material": {
         "name": "物料质量Agent",
         "description": "查询和分析物料维度的质量数据，包括进货、退货、合格率",
-        "tables": ["part_quality", "part_quality_monthly"],
+        "tables": ["part_quality_monthly"],
         "keywords": ["物料", "零部件", "元件", "Part"],
     },
     "root_cause": {
