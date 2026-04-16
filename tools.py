@@ -66,7 +66,6 @@ def tool_query_table(table_key: str, columns: list[str] | None = None,
             "sku_quality_monthly": "get_sku_quality_monthly",
             "factory_quality": "get_factory_quality",
             "factory_quality_monthly": "get_factory_quality_monthly",
-            "part_quality": "get_part_quality",
             "part_quality_monthly": "get_part_quality_monthly",
         }
         mcp_tool = mcp_mapping.get(table_key)
