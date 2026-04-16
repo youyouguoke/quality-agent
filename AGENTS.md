@@ -25,7 +25,7 @@
 - 问"整体概况" → 只调 `get_return_overview`
 - 问"全面分析/客退报告" → 调全部工具，输出完整报告
 
-同时可直接查询本地 MySQL 数据库中的质量数据表：
+同时可通过 MCP 查询以下质量数据表：
 - `sn_quality_data` — SN 全链路质量数据
 - `sn_quality_key_material` — SN 关键物料信息
 - `supplier_quality_iqc` — 供应商 IQC 数据
@@ -33,6 +33,14 @@
 - `supplier_performance_comparison` — 供应商横向对比
 - `return_data` — 全量客退数据
 - `maintain_consume_material` — 维修消耗物料
+- `iqc_ng` — IQC 来料抽检不合格记录（含物料、供应商、抽检时间、抽检结果、检验明细）
+- `pqc_ng` — PQC 制程维修记录（含 SN、SKU、故障现象、故障原因、不良责任、维修方法）
+- `oqc_ng` — OQC 出货抽检不合格记录（含 SKU、抽样时间、判定结果、不合格处置、检验明细）
+
+**NG 数据分析场景**：
+- 问"IQC不良"/"来料不良"/"进料检验" → 查 `iqc_ng` 表，按供应商/物料/工厂维度统计不合格分布
+- 问"PQC不良"/"制程不良"/"产线维修" → 查 `pqc_ng` 表，按故障原因/故障现象/责任归属统计
+- 问"OQC不良"/"出货不良"/"出货检验" → 查 `oqc_ng` 表，按 SKU/工厂/判定结果统计
 
 ## SKU 名称映射
 

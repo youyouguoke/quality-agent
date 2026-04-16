@@ -59,6 +59,9 @@ def tool_query_table(table_key: str, columns: list[str] | None = None,
             "supplier_quality_iqc_monthly": "get_supplier_iqc_monthly",
             "supplier_performance_comparison": "get_supplier_performance_comparison",
             "maintain_consume_material": "get_maintain_consume_material",
+            "iqc_ng": "get_iqc_ng",
+            "pqc_ng": "get_pqc_ng",
+            "oqc_ng": "get_oqc_ng",
         }
         mcp_tool = mcp_mapping.get(table_key)
         if not mcp_tool:

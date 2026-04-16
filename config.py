@@ -89,7 +89,6 @@ UNAVAILABLE_TABLES = {
     "sku_quality", "sku_quality_monthly",
     "factory_quality", "factory_quality_monthly",
     "part_quality", "part_quality_monthly",
-    "iqc_ng", "pqc_ng", "oqc_ng",
 }
 
 # ======================== 数据表字段定义 ========================
@@ -334,7 +333,7 @@ TABLE_SCHEMAS = {
         },
     },
     "iqc_ng": {
-        "description": "全量IQC抽检不合格数据（当前不可用）",
+        "description": "全量IQC抽检不合格数据",
         "source": "IQC数据",
         "columns": [
             "factory_name", "material_code", "material_name", "supplier_name",
@@ -352,7 +351,7 @@ TABLE_SCHEMAS = {
         },
     },
     "pqc_ng": {
-        "description": "全量PQC维修数据（当前不可用）",
+        "description": "全量PQC维修数据",
         "source": "PQC数据",
         "columns": [
             "factory_name", "sn_no", "sku", "sku_name",
@@ -371,7 +370,7 @@ TABLE_SCHEMAS = {
         },
     },
     "oqc_ng": {
-        "description": "全量OQC抽检不合格数据（当前不可用）",
+        "description": "全量OQC抽检不合格数据",
         "source": "OQC数据",
         "columns": [
             "factory_name", "inspection_order", "sku", "sku_name",
