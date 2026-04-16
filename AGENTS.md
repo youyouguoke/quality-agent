@@ -49,12 +49,17 @@
 - `factory_quality_monthly` — 代工厂月度质量趋势
 - `part_quality_monthly` — 物料月度质量趋势（进货、退货、合格率）
 
-**"质量情况"与"客退分析"的区分**（非常重要）：
-- 问"XX质量情况"/"XX质量怎么样"/"XX质量分析" → 优先调 `sku_overview`（查 sku_quality + sku_quality_monthly），展示生产、出货、客退综合指标和月度趋势
-- 问"XX客退分析"/"XX退货情况"/"XX客退报告" → 调 `return_overview`（查客退7维度数据）
-- 问"XX工厂质量" → 优先调 `factory_overview`（查 factory_quality + factory_quality_monthly）
-- 问"XX供应商质量"/"供应商XX怎么样"/"XX来料质量" → 优先调 `supplier_overview`（查 supplier_quality_iqc + supplier_quality_iqc_monthly + supplier_performance_comparison），展示IQC数据、月度趋势和横向对比
-- 用户问"质量"时不要默认等同于"客退"，质量是更广的概念，包括生产直通率、出货检验、来料检验等
+**"质量情况"与"客退分析"的区分**（非常重要，严格遵守）：
+
+| 用户问题关键词 | 应该调用 | 不应该调用 |
+|---|---|---|
+| "XX质量情况"/"XX质量怎么样"/"XX质量分析" | `sku_overview`（查 sku_quality + sku_quality_monthly） | ~~return_overview~~、~~get_return_data~~ |
+| "XX客退分析"/"XX退货情况"/"XX客退报告" | `return_overview`（查客退7维度数据） | ~~sku_overview~~ |
+| "XX工厂质量"/"爱创质量"/"东明质量" | `factory_overview`（查 factory_quality + factory_quality_monthly） | ~~return_overview~~、~~get_return_data~~ |
+| "XX供应商质量"/"供应商XX怎么样"/"XX来料质量" | `supplier_overview`（查 supplier_quality_iqc + iqc_monthly + comparison） | ~~return_overview~~、~~get_return_data~~ |
+| 包含"/"的编号如 62937/xxx | `sn_full_trace`（SN溯源） | |
+
+**"质量"≠"客退"**：用户问"质量情况/质量分析/质量怎么样"时，应使用对应维度的质量汇总表（sku_quality/factory_quality/supplier_quality_iqc），这些表包含生产直通率、出货检验、来料检验等综合指标。只有用户明确说"客退/退货"时才用 return_overview。
 
 ## SKU 名称映射
 
