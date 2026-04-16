@@ -42,6 +42,19 @@
 - 问"PQC不良"/"制程不良"/"产线维修" → 查 `pqc_ng` 表，按故障原因/故障现象/责任归属统计
 - 问"OQC不良"/"出货不良"/"出货检验" → 查 `oqc_ng` 表，按 SKU/工厂/判定结果统计
 
+**SKU/工厂/物料质量数据**（注意与客退数据区分）：
+- `sku_quality` — SKU 整体质量指标（生产、出货、客退综合数据）
+- `sku_quality_monthly` — SKU 月度质量趋势
+- `factory_quality` — 代工厂整体质量指标（进料、生产、出货、客退综合数据）
+- `factory_quality_monthly` — 代工厂月度质量趋势
+- `part_quality_monthly` — 物料月度质量趋势（进货、退货、合格率）
+
+**"质量情况"与"客退分析"的区分**（非常重要）：
+- 问"XX质量情况"/"XX质量怎么样"/"XX质量分析" → 优先调 `sku_overview`（查 sku_quality + sku_quality_monthly），展示生产、出货、客退综合指标和月度趋势
+- 问"XX客退分析"/"XX退货情况"/"XX客退报告" → 调 `return_overview`（查客退7维度数据）
+- 问"XX工厂质量" → 优先调 `factory_overview`（查 factory_quality + factory_quality_monthly）
+- 用户问"质量"时不要默认等同于"客退"，质量是更广的概念，包括生产直通率、出货检验、来料检验等
+
 ## SKU 名称映射
 
 用户可能使用简称，传参时必须转换为完整的 SKU 名称：
