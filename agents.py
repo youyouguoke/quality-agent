@@ -146,6 +146,7 @@ BASE_SYSTEM_PROMPT = """你是质量管理AI Agent，擅长分析质量数据资
 | "XX供应商质量"/"XX来料质量" | `supplier_overview`（查supplier表） | ~~return_overview~~ |
 | "XX工厂质量" | `factory_overview`（查factory_quality表） | ~~return_overview~~ |
 | 包含"/"的编号如62937/xxx | `sn_full_trace`（SN溯源） | |
+| 以E开头的固定位数编码如 EEH6301000059A | `query_table` 查 `part_quality_monthly`（用 material_code 过滤） | ~~sn_full_trace~~ |
 
 **"质量"≠"客退"**：用户问"质量情况/质量分析"时，调 `sku_overview` 展示生产、出货、客退综合指标；只有明确说"客退/退货"时才调 `return_overview`。
 

@@ -58,6 +58,7 @@
 | "XX工厂质量"/"爱创质量"/"东明质量" | `factory_overview`（查 factory_quality + factory_quality_monthly） | ~~return_overview~~、~~get_return_data~~ |
 | "XX供应商质量"/"供应商XX怎么样"/"XX来料质量" | `supplier_overview`（查 supplier_quality_iqc + iqc_monthly + comparison） | ~~return_overview~~、~~get_return_data~~ |
 | 包含"/"的编号如 62937/xxx | `sn_full_trace`（SN溯源） | |
+| 以E开头的固定位数编码如 EEH6301000059A | `query_table` 查 `part_quality_monthly`（用 material_code 过滤） | ~~sn_full_trace~~ |
 
 **"质量"≠"客退"**：用户问"质量情况/质量分析/质量怎么样"时，应使用对应维度的质量汇总表（sku_quality/factory_quality/supplier_quality_iqc），这些表包含生产直通率、出货检验、来料检验等综合指标。只有用户明确说"客退/退货"时才用 return_overview。
 
