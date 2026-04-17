@@ -682,24 +682,20 @@ def tool_root_cause_analysis(sku_name: str = None, defect_material: str = None,
     result = {}
 
     try:
-        # ====== 1. 从 return_data 获取相关客退SN（通过 MCP） ======
+        # ====== 1. 从 return_data 获取相关客退SN（通过 MCP，在服务端过滤） ======
         mcp_args = {}
         if sku_name:
             mcp_args["sku_name"] = sku_name
+        if defect_material:
+            mcp_args["defect_material"] = defect_material
+        if defect_cause:
+            mcp_args["defect_cause"] = defect_cause
         if limit and limit > 0:
             mcp_args["limit"] = limit
 
         return_data = _mcp_call("get_return_data", mcp_args)
         return_rows = return_data if isinstance(return_data, list) else ([return_data] if return_data and "error" not in (return_data if isinstance(return_data, dict) else {}) else [])
         return_rows = _serialize_rows(return_rows)
-
-        # 如果指定了不良物料或不良原因，做二次过滤
-        if defect_material:
-            return_rows = [r for r in return_rows
-                          if r.get("defect_material") and defect_material in str(r["defect_material"])]
-        if defect_cause:
-            return_rows = [r for r in return_rows
-                          if r.get("defect_cause") and defect_cause in str(r["defect_cause"])]
 
         result["return_count"] = len(return_rows)
         result["filter"] = {"sku_name": sku_name, "defect_material": defect_material,
