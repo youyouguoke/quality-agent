@@ -48,6 +48,11 @@ description: 根因推理链分析，从客退现象出发跨表关联追溯不�
 
 ## 领域知识
 
+- **复测OK（NTF）的业务规则**（非常重要）：
+  - 复测OK表示工厂测试未复现故障（NTF = No Trouble Found）
+  - 复测OK的客退机，责任归属默认归智米，这是流程规则，**不代表是智米的设计问题**，仅表示排除了供应商和代工厂
+  - 复测OK的客退机**不需要填写不良原因和不良物料**，字段为空是正常业务流程，**不是追溯体系缺口**
+  - 分析时应区分复测OK和复测NG的数据，不要将复测OK的空值误判为数据缺失
 - 关联键：sn_no 贯穿 return_data → sn_quality_data → sn_quality_key_material → maintain_consume_material
 - supplier_name 从 sn_quality_key_material 关联到 supplier_quality_iqc 和 supplier_performance_comparison
 - material_code 从 sn_quality_key_material 关联到 supplier_performance_comparison 做同物料多供应商对比
