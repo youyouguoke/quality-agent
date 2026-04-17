@@ -274,6 +274,7 @@ def tool_factory_overview(factory: str) -> str:
     result = {"factory": factory}
     try:
         quality = _mcp_call("get_factory_quality", {"production_factory": factory})
+        logger.info("get_factory_quality 返回类型=%s, 内容=%s", type(quality).__name__, str(quality)[:500])
         rows = quality if isinstance(quality, list) else ([quality] if quality and "error" not in (quality if isinstance(quality, dict) else {}) else [])
         result["quality_data"] = _serialize_rows(rows)
     except Exception as e:
