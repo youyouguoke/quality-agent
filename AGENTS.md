@@ -27,7 +27,7 @@
 
 同时可通过 MCP 查询以下质量数据表：
 - `sn_quality_data` — SN 全链路质量数据
-- `sn_quality_key_material` — SN 关键物料信息
+- `sn_quality_key_material` — SN 关键物料信息（仅返回 IQC 抽检合格率低于 100% 的物料，即有过不合格记录的物料，合格率 100% 的物料不返回）
 - `supplier_quality_iqc` — 供应商 IQC 数据
 - `supplier_quality_iqc_monthly` — 供应商月度 IQC 趋势
 - `supplier_performance_comparison` — 供应商横向对比
