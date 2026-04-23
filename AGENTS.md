@@ -33,7 +33,7 @@
 - `supplier_performance_comparison` — 供应商横向对比
 - `return_data` — 全量客退数据
 - `maintain_consume_material` — 维修消耗物料
-- `iqc_ng` — IQC 来料抽检不合格记录（含物料、供应商、抽检时间、抽检结果deside_result、检验明细。注意：只根据 deside_result 字段判断抽检结果，忽略 final_result 字段）
+- `iqc_ng` — IQC 来料抽检不合格记录（含物料、供应商、抽检时间、抽检结果deside_result、检验明细。注意：只根据 deside_result 字段判断抽检结果，忽略 final_result 字段，输出时不展示 final_result）
 - `pqc_ng` — PQC 制程维修记录（含 SN、SKU、故障现象、故障原因、不良责任、维修方法）
 - `oqc_ng` — OQC 出货抽检不合格记录（含 SKU、抽样时间、判定结果、不合格处置、检验明细）
 
