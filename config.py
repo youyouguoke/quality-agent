@@ -317,7 +317,7 @@ TABLE_SCHEMAS = {
         "columns": [
             "factory_name", "material_code", "material_name", "supplier_name",
             "inspection_order", "delivery_order", "inspection_time",
-            "submitted_quantity", "inspected_quantity", "inspection_result",
+            "submitted_quantity", "inspected_quantity", "deside_result",
             "inspection_detail",
         ],
         "column_mapping": {
@@ -325,7 +325,7 @@ TABLE_SCHEMAS = {
             "material_name": "物料名称", "supplier_name": "供应商",
             "inspection_order": "检验单号", "delivery_order": "送货单号",
             "inspection_time": "抽检时间", "submitted_quantity": "送检数量",
-            "inspected_quantity": "抽检数量", "inspection_result": "抽检结果",
+            "inspected_quantity": "抽检数量", "deside_result": "抽检结果",
             "inspection_detail": "检验明细",
         },
     },
